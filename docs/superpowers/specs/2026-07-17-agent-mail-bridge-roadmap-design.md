@@ -62,7 +62,7 @@
 | D6 | 平台 | v0.1 支持 macOS（LaunchAgent）+ Linux（systemd user unit）；Windows 后置 | Node 跨平台成本低；Linux 覆盖 homelab/服务器人群，对开源增长重要 |
 | D7 | 语言 | 代码/主文档英文；README 提供 zh-CN 翻译 | 业界主流开源的必然选择 |
 | D8 | 桌面可见性 | 不承诺邮件任务出现在 Codex 桌面 app 列表 | 已证实的产品限制（独立 session index） |
-| D9 | License 与可见性 | MIT；仓库自始 public | 生态惯例、传播摩擦最低；public 倒逼凭据卫生。用户已确认 |
+| D9 | License 与可见性 | MIT（`Copyright (c) 2026 claude89757`）；仓库自始 public | 生态惯例、传播摩擦最低；public 倒逼凭据卫生。用户已确认 |
 | D10 | 包名/命令名 | npm 包 `agent-mail-bridge`（2026-07-17 查证未被占用）；bin 主名同名 + `amb` 短别名 | npm 上 `amb` 包已被占用，但 bin 命令名不受注册表约束。用户已确认 |
 
 handoff 中**全部继承**的设计资产：命令/outbox 双状态机、幂等键（Message-ID 唯一索引 + 派生 intent ID）、防自发自收循环（outbox nonce/header）、澄清 token 流程、bridge-owned worktree 隔离、远程权限上限（不高于 workspace-write、禁 danger-full-access）、高风险动作 fail closed、脱敏日志、`setup/doctor/status/pause/resume` 命令面、卸载清理顺序。
@@ -207,12 +207,11 @@ ClaudeCodeDriver（Agent SDK：resume/流式/`canUseTool`）；QQ 邮箱/iCloud/
 - 新机器从 README 到首封结果邮件 ≤ 10 分钟；
 - 仓库无任何真实凭据/邮箱/路径；CI 含 secret scanning。
 
-## 7. 开放问题（进入实现计划前需回答）
+## 7. 开放问题（实现期内解决，不阻塞启动）
 
-1. LICENSE 版权行署名：`Copyright (c) 2026 <?>` 待用户提供署名（GitHub 用户名或真名）；LICENSE 文件在 Phase 0 创建。
-2. 凭据存储：macOS Keychain（`security` CLI）确定；Linux 上 libsecret 可用性差异大，是否接受 0600 加密文件降级？
-3. 澄清邮件的候选展示格式（移动端可读性）在 Phase 4 前做一次真机走查。
-4. P0-4 的 timebox（建议 ≤3 个工作日）。
+1. 凭据存储：macOS Keychain（`security` CLI）确定；Linux 上 libsecret 可用性差异大，是否接受 0600 加密文件降级？
+2. 澄清邮件的候选展示格式（移动端可读性）在 Phase 4 前做一次真机走查。
+3. P0-4 的 timebox 定为 3 个工作日，到期以现有证据出 ADR 收束。
 
 开发期测试凭据约定：专用测试 Gmail 账户的应用专用密码存放于 `~/.secrets/amb-test.env`（`AMB_TEST_IMAP_USER` / `AMB_TEST_IMAP_PASS`，目录 0700、文件 0600），仅运行时读取；凭据不进入 git、日志、对话与任务提示词。
 
