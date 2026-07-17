@@ -86,6 +86,12 @@ interface LocalReading {
  * extracted by `type` below, so the locale's own separators/ordering never
  * actually matter.
  *
+ * `hourCycle: 'h23'` (rather than `hour12: false`) pins the hour field to
+ * the spec-guaranteed 00-23 range. `hour12: false` resolves the cycle
+ * through locale/CLDR data and MAY land on `'h24'`, under which local
+ * midnight reads `'24:0X'` — lexically above every `'HH:MM'` bound, so a
+ * same-day window starting `'00:00'` would wrongly report outside-hours.
+ *
  * Weekday is deliberately NOT read from Intl's `weekday` part — that comes
  * back as a locale-dependent name (e.g. `'Fri'`) which would need fragile
  * re-parsing/mapping back to a number. Instead it is derived from the
@@ -98,7 +104,7 @@ function readLocal(timezone: string, now: Date): LocalReading {
   // doc comment on `TimeWindowConfig` above.
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
-    hour12: false,
+    hourCycle: 'h23',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',

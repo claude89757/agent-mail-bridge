@@ -137,6 +137,28 @@ describe('isWithinWindow (D-P2-6)', () => {
     });
   });
 
+  describe('DST fall-back (America/New_York, 2026-11-01: 02:00 EDT falls back to 01:00 EST)', () => {
+    it('gives the SAME verdict for both UTC instants that read as the repeated 01:30 local', () => {
+      // The repeated hour: 2026-11-01T05:30:00Z is 01:30 EDT (before the
+      // fall-back) and 2026-11-01T06:30:00Z is 01:30 EST (after it) — the
+      // SAME wall-clock reading, one hour of real time apart. D-P2-6 is a
+      // wall-clock-only policy, so both instants MUST agree; pinned with a
+      // window where 01:30 is decisive (01:00-02:00 ⇒ both within).
+      const fallBack = config({
+        timezone: 'America/New_York',
+        start: '01:00',
+        end: '02:00',
+      });
+
+      const beforeFallBack = isWithinWindow(fallBack, new Date('2026-11-01T05:30:00Z'));
+      const afterFallBack = isWithinWindow(fallBack, new Date('2026-11-01T06:30:00Z'));
+
+      expect(beforeFallBack).toEqual({ within: true, reason: null });
+      expect(afterFallBack).toEqual({ within: true, reason: null });
+      expect(afterFallBack).toEqual(beforeFallBack);
+    });
+  });
+
   describe('timezone correctness', () => {
     it('gives opposite verdicts for the same instant when the two zones disagree on the calendar date', () => {
       // The SAME UTC instant reads as two different local calendar days:
