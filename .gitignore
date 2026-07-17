@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Test artifacts
+coverage/
+
+# Logs
+*.log
+logs/
+
+# Runtime state (never commit local bridge state or databases)
+*.sqlite
+*.sqlite3
+*.db
+
+# Credentials and secrets (defense in depth; real credentials live outside the repo)
+.env
+.env.*
+*.pem
+*.key
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+
+# Claude Code local worktrees
+.claude/worktrees/
