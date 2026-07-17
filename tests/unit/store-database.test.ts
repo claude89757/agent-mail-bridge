@@ -172,4 +172,19 @@ describe('applyMigrations', () => {
     ).toThrow(/strictly increasing/);
     db.close();
   });
+
+  // Task 1 review nit: a version-0 migration would pass "strictly
+  // increasing" trivially (0 is greater than the initial -Infinity
+  // sentinel) but would then silently never apply — the in-transaction
+  // guard in applyMigrations skips whenever `user_version >= migration.
+  // version`, and PRAGMA user_version starts at 0 on a fresh database, so
+  // `0 >= 0` would skip it forever. Reject it up front instead.
+  it('rejects a migration version below 1 (would never apply since user_version starts at 0)', () => {
+    const db = openDatabase(':memory:');
+
+    expect(() => applyMigrations(db, [{ version: 0, sql: '' }])).toThrow(
+      /version must be >= 1/,
+    );
+    db.close();
+  });
 });

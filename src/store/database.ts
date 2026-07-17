@@ -14,6 +14,13 @@ import type { Migration } from './migrations.js';
 function assertStrictlyIncreasingVersions(migrations: readonly Migration[]): void {
   let previousVersion = Number.NEGATIVE_INFINITY;
   for (const migration of migrations) {
+    // version 0 would pass "strictly increasing" trivially but then never
+    // actually apply: PRAGMA user_version starts at 0 on a fresh database,
+    // and the in-transaction guard below skips whenever the stored version
+    // is already >= the migration's version.
+    if (migration.version < 1) {
+      throw new Error(`migration version must be >= 1 (found ${migration.version})`);
+    }
     if (migration.version <= previousVersion) {
       throw new Error(
         `migrations must be ordered by strictly increasing version ` +
