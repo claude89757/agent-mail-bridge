@@ -16,13 +16,6 @@ import { IllegalTransitionError } from './errors.js';
 
 export type OutboxStatus = 'PENDING' | 'SENDING' | 'SENT' | 'UNCERTAIN';
 
-export const OUTBOX_STATUSES: readonly OutboxStatus[] = [
-  'PENDING',
-  'SENDING',
-  'SENT',
-  'UNCERTAIN',
-];
-
 /**
  * Legal outgoing edges per status (D-P2-3). SENT is terminal: a sent mail
  * is never re-sent, re-queued or re-classified.
@@ -33,6 +26,12 @@ export const OUTBOX_TRANSITIONS: Readonly<Record<OutboxStatus, readonly OutboxSt
   SENT: [],
   UNCERTAIN: ['SENT'],
 };
+
+// Derived from OUTBOX_TRANSITIONS's keys (declared below it to avoid a
+// temporal-dead-zone reference) rather than hand-written, so this list can
+// never silently drift from the map — extending OUTBOX_STATUSES without
+// extending OUTBOX_TRANSITIONS is now a type error instead of a silent gap.
+export const OUTBOX_STATUSES = Object.keys(OUTBOX_TRANSITIONS) as readonly OutboxStatus[];
 
 /**
  * Throws `IllegalTransitionError` unless `to` is one of `from`'s legal edges

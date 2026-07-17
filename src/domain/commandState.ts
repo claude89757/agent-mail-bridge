@@ -6,7 +6,7 @@
  *
  * SYSTEM_ECHO and REJECTED are terminal BY DESIGN: an echo of our own
  * outbound mail (D-P2-4, control C3) or a gate rejection (identity C1 /
- * time-window / missing Message-ID) never legitimately leads anywhere else.
+ * the readyAt fence / missing Message-ID) never legitimately leads anywhere else.
  * READY_FOR_DISPATCH also has an empty outgoing-edge list below, but for a
  * DIFFERENT reason — it is Phase 2's frontier, not conceptually terminal.
  * Phase 3 extends the machine past it (dispatch/execution/reply states) via
@@ -21,14 +21,6 @@ export type CommandStatus =
   | 'QUEUED_WINDOW'
   | 'READY_FOR_DISPATCH';
 
-export const COMMAND_STATUSES: readonly CommandStatus[] = [
-  'RECEIVED',
-  'SYSTEM_ECHO',
-  'REJECTED',
-  'QUEUED_WINDOW',
-  'READY_FOR_DISPATCH',
-];
-
 /**
  * Legal outgoing edges per status (D-P2-2). An empty array means "no legal
  * outgoing edge from here" — see the module doc comment above for why that
@@ -42,6 +34,12 @@ export const COMMAND_TRANSITIONS: Readonly<Record<CommandStatus, readonly Comman
   QUEUED_WINDOW: ['READY_FOR_DISPATCH'],
   READY_FOR_DISPATCH: [],
 };
+
+// Derived from COMMAND_TRANSITIONS's keys (declared below it to avoid a
+// temporal-dead-zone reference) rather than hand-written, so this list can
+// never silently drift from the map — extending COMMAND_STATUSES without
+// extending COMMAND_TRANSITIONS is now a type error instead of a silent gap.
+export const COMMAND_STATUSES = Object.keys(COMMAND_TRANSITIONS) as readonly CommandStatus[];
 
 /**
  * Throws `IllegalTransitionError` unless `to` is one of `from`'s legal edges
