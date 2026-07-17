@@ -1,8 +1,9 @@
 # transports/
 
-`MailTransport` interface (`watch` / `fetch` / `send` / `markProcessed`) and its
-implementations. First implementation: `imap-smtp` (IMAP IDLE + SMTP with app
-passwords). Future: `gmail-api`, `graph`.
+`MailTransport` interface (`fetchSince` / `send` / `markProcessed` / `close`,
+locked by decision D-P2-11 — see `types.ts`) and its implementations. First
+implementation: `imap-smtp` (IMAP IDLE + SMTP with app passwords). Future:
+`gmail-api`, `graph`.
 
 - Does: move raw mail in and out reliably; nothing else.
 - Used by: `application/` (ingest, deliver).
