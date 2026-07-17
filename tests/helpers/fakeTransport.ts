@@ -38,6 +38,17 @@ export interface FakeMailTransportOptions {
 }
 
 /**
+ * The intended at-least-once duplicate case: the very same object
+ * redelivered, or a re-parsed copy carrying the same non-null Message-ID.
+ * Two DISTINCT null-Message-ID objects are never the same logical mail —
+ * with no id and no shared reference there is nothing left to prove it by,
+ * so they fail closed as a collision in `deliver`.
+ */
+function isSameLogicalMail(a: IncomingMail, b: IncomingMail): boolean {
+  return a === b || (b.messageId !== null && a.messageId === b.messageId);
+}
+
+/**
  * In-memory, at-least-once `MailTransport`. Deliberately does NOT sort or
  * dedupe delivered mail: `deliver` enqueues exactly what it is given, in
  * call order, duplicates and all — de-duplication is the store layer's job
@@ -60,11 +71,34 @@ export class FakeMailTransport implements MailTransport {
   }
 
   /**
-   * Enqueues an incoming mail exactly as given. No sorting, no dedupe, no
-   * validation of `uid` monotonicity — callers may deliver out of order or
-   * redeliver the same mail to exercise at-least-once semantics.
+   * Enqueues an incoming mail exactly as given. No sorting, no dedupe —
+   * callers may deliver out of order or redeliver the same logical mail
+   * (same object, or a re-parsed copy with the same non-null Message-ID) to
+   * exercise at-least-once semantics.
+   *
+   * The ONE thing it does validate: a DIFFERENT mail must not reuse an
+   * already-delivered `(mailbox, uidValidity, uid)` triple. A real IMAP
+   * server never reuses a uid within one uidValidity, so that state is
+   * impossible in production and always means a broken test fixture (the
+   * classic trap: hand-picking a low uid AFTER `reflectOutbound` already
+   * auto-assigned it) — the fake throws loudly instead of modeling it.
    */
   deliver(mail: IncomingMail): void {
+    const occupant = this.deliveredMails.find(
+      (existing) =>
+        existing.mailbox === mail.mailbox &&
+        existing.uidValidity === mail.uidValidity &&
+        existing.uid === mail.uid,
+    );
+    if (occupant !== undefined && !isSameLogicalMail(occupant, mail)) {
+      throw new Error(
+        `FakeMailTransport.deliver: uid collision — a different mail already occupies ` +
+          `(${mail.mailbox}, uidValidity ${mail.uidValidity}, uid ${mail.uid}); a real IMAP ` +
+          `server never reuses a uid within one uidValidity. Pick a fresh uid, or deliver ` +
+          `hand-picked uids BEFORE the first reflectOutbound (see its doc comment).`,
+      );
+    }
+
     this.deliveredMails.push(mail);
     if (mail.uid > this.uidCounter) {
       this.uidCounter = mail.uid;
@@ -116,11 +150,24 @@ export class FakeMailTransport implements MailTransport {
    * re-ingest its own reply as a new command.
    *
    * Gets a fresh uid in this fake's own uid sequence (one past the highest
-   * uid `deliver` has seen so far). `from`/`to`/`cc` are left empty — the
-   * reflected mail's sole purpose is driving the echo gate, which inspects
-   * only the Message-ID and the outbox header, never the address lists.
-   * `internalDate` defaults to the Unix epoch when the caller does not care
-   * about its value; pass an explicit ISO instant to control it.
+   * uid `deliver` has seen so far). Hand-picked `deliver` uids and this
+   * auto-sequence share ONE uid space, guarded by `deliver`'s collision
+   * check — the safe patterns for a test are: make every hand-picked
+   * `deliver` call BEFORE the first `reflectOutbound` (the auto-sequence
+   * then continues above the highest uid seen), or rely on auto-assigned
+   * uids exclusively. Hand-picking a low uid AFTER a reflect can land on a
+   * uid the auto-sequence already took, and `deliver` will throw.
+   *
+   * The receipt is trusted verbatim: there is no check that `send` ever
+   * issued it — a hand-built receipt is accepted without validation
+   * (test-helper pragmatism; tests may fabricate receipts to stage edge
+   * states directly).
+   *
+   * `from`/`to`/`cc` are left empty — the reflected mail's sole purpose is
+   * driving the echo gate, which inspects only the Message-ID and the
+   * outbox header, never the address lists. `internalDate` defaults to the
+   * Unix epoch when the caller does not care about its value; pass an
+   * explicit ISO instant to control it.
    */
   reflectOutbound(receipt: SendReceipt, internalDate = '1970-01-01T00:00:00.000Z'): void {
     this.uidCounter += 1;

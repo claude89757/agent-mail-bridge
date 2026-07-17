@@ -101,6 +101,56 @@ describe('FakeMailTransport (D-P2-11 fake)', () => {
     });
   });
 
+  describe('deliver uid-collision guard', () => {
+    // On a real IMAP server a uid is never reused within one uidValidity, so
+    // two DIFFERENT mails on the same (mailbox, uidValidity, uid) triple is
+    // an impossible state — reaching it in a test always means a broken
+    // fixture (e.g. hand-picking uid 1 after reflectOutbound already
+    // auto-assigned it). The fake fails loudly instead of modeling it.
+    it('throws when a DIFFERENT mail (different messageId) reuses an already-delivered triple', () => {
+      const transport = new FakeMailTransport({ registerOutbox: noopRegisterOutbox });
+      transport.deliver(incomingMail({ uid: 7, messageId: 'first@example.com' }));
+
+      expect(() =>
+        transport.deliver(incomingMail({ uid: 7, messageId: 'second@example.com' })),
+      ).toThrow(/uid collision/);
+    });
+
+    it('allows redelivery as a re-parsed copy: distinct object, same non-null messageId', async () => {
+      // At-least-once redelivery in practice hands the caller a fresh parse
+      // of the same message, not the same object reference — that must stay
+      // as legal as the reference-equal case.
+      const transport = new FakeMailTransport({ registerOutbox: noopRegisterOutbox });
+      transport.deliver(incomingMail({ uid: 7, messageId: 'dup@example.com' }));
+
+      expect(() =>
+        transport.deliver(incomingMail({ uid: 7, messageId: 'dup@example.com' })),
+      ).not.toThrow();
+
+      const result = await transport.fetchSince(FAKE_MAILBOX, FAKE_UID_VALIDITY, 0);
+      expect(result).toHaveLength(2);
+    });
+
+    it('allows redelivering the very same object even when its Message-ID is null', () => {
+      const transport = new FakeMailTransport({ registerOutbox: noopRegisterOutbox });
+      const mail = incomingMail({ uid: 7, messageId: null });
+      transport.deliver(mail);
+
+      expect(() => transport.deliver(mail)).not.toThrow();
+    });
+
+    it('throws for two DISTINCT null-Message-ID objects on the same triple', () => {
+      // With no Message-ID and no shared reference there is nothing left to
+      // prove they are the same logical mail — fail closed as a collision.
+      const transport = new FakeMailTransport({ registerOutbox: noopRegisterOutbox });
+      transport.deliver(incomingMail({ uid: 7, messageId: null }));
+
+      expect(() => transport.deliver(incomingMail({ uid: 7, messageId: null }))).toThrow(
+        /uid collision/,
+      );
+    });
+  });
+
   describe('send', () => {
     it('invokes registerOutbox BEFORE the returned promise resolves', async () => {
       const events: string[] = [];
@@ -165,6 +215,19 @@ describe('FakeMailTransport (D-P2-11 fake)', () => {
       await transport.send(result);
 
       expect(transport.sentMails).toEqual([ack, result]);
+    });
+
+    it('rejects with the registerOutbox error and records nothing into sentMails', async () => {
+      // Mirrors the real send order's failure half: if the outbox row cannot
+      // be recorded, no send happened — the error propagates, no receipt is
+      // ever observable, and the mail must not appear as "sent".
+      const failure = new Error('outbox row could not be recorded');
+      const transport = new FakeMailTransport({
+        registerOutbox: () => Promise.reject(failure),
+      });
+
+      await expect(transport.send(outboundMail())).rejects.toBe(failure);
+      expect(transport.sentMails).toEqual([]);
     });
   });
 
