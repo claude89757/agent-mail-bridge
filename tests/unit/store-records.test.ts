@@ -205,6 +205,13 @@ describe('OutboxStore (D-P2-10 / D-P2-3)', () => {
     expect(store.isKnownOutboxMessageId('unknown@example.com')).toBe(false);
   });
 
+  /** Reads the persisted status straight off the row, bypassing the store. */
+  function persistedStatus(id: string): string | undefined {
+    return db
+      .prepare<[string], { status: string }>(`SELECT status FROM outbox WHERE id = ?`)
+      .get(id)?.status;
+  }
+
   it('transition follows the legal D-P2-3 chain PENDING -> SENDING -> SENT', () => {
     store.create({
       id: 'outbox-1',
@@ -216,6 +223,28 @@ describe('OutboxStore (D-P2-10 / D-P2-3)', () => {
 
     expect(() => store.transition('outbox-1', 'SENDING', '2026-07-17T00:00:02.000Z')).not.toThrow();
     expect(() => store.transition('outbox-1', 'SENT', '2026-07-17T00:00:03.000Z')).not.toThrow();
+  });
+
+  it('transition walks the D-P2-3 reconciliation branch PENDING -> SENDING -> UNCERTAIN -> SENT, persisting each step', () => {
+    store.create({
+      id: 'outbox-1',
+      messageId: 'reply-1@example.com',
+      commandId: null,
+      kind: 'RESULT',
+      now: '2026-07-17T00:00:01.000Z',
+    });
+    expect(persistedStatus('outbox-1')).toBe('PENDING');
+
+    store.transition('outbox-1', 'SENDING', '2026-07-17T00:00:02.000Z');
+    expect(persistedStatus('outbox-1')).toBe('SENDING');
+
+    // Send outcome unknown — the only legal way into UNCERTAIN.
+    store.transition('outbox-1', 'UNCERTAIN', '2026-07-17T00:00:03.000Z');
+    expect(persistedStatus('outbox-1')).toBe('UNCERTAIN');
+
+    // Reconciliation confirms the send — the only legal way out of UNCERTAIN.
+    store.transition('outbox-1', 'SENT', '2026-07-17T00:00:04.000Z');
+    expect(persistedStatus('outbox-1')).toBe('SENT');
   });
 
   it('transition throws IllegalTransitionError on PENDING -> UNCERTAIN (no SENDING step) and does NOT persist', () => {
