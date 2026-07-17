@@ -17,4 +17,5 @@ ADR that references the old one.
 
 | ADR | Title | Status |
 | --- | --- | --- |
-| — | (first ADRs arrive with the Phase 1 spikes: P0-1 IMAP stability, P0-2 Codex driver, P0-3 identity factors, P0-4 connector reserve) | — |
+| [0001](0001-sqlite-driver-better-sqlite3.md) | SQLite driver — better-sqlite3 over node:sqlite | accepted |
+| — | (spike ADRs arrive with Phase 1: P0-1 IMAP stability, P0-2 Codex driver, P0-3 identity factors, P0-4 connector reserve) | — |
