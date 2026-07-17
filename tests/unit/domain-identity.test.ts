@@ -86,6 +86,19 @@ describe('checkIdentityC1 (D-P2-5, control C1)', () => {
     expect(result).toEqual({ ok: false, reason: 'IDENTITY_PLUS_TAG' });
   });
 
+  it('does NOT treat a + in the DOMAIN part as a plus-tag', () => {
+    // The plus-tag rule is about local-part aliasing only; a "+" after the
+    // "@" is not an alias mechanism and must not trip PLUS_TAG.
+    const domainPlusSelf = 'user@ex+ample.com';
+
+    const result = checkIdentityC1(
+      { from: [domainPlusSelf], to: [domainPlusSelf], cc: [] },
+      domainPlusSelf,
+    );
+
+    expect(result).toEqual({ ok: true });
+  });
+
   it('rejects with IDENTITY_FROM when From does not match self', () => {
     const result = checkIdentityC1({ from: ['attacker@example.net'], to: [SELF], cc: [] }, SELF);
 
@@ -111,6 +124,47 @@ describe('checkIdentityC1 (D-P2-5, control C1)', () => {
     );
 
     expect(result).toEqual({ ok: false, reason: 'IDENTITY_PLUS_TAG' });
+  });
+
+  // A blank configured self address is a config error, never a comparison
+  // target: without the guard, '' === '' would let mail with empty-string
+  // addresses pass the gate (fail open, found in review).
+  describe('selfAddress config guard (fail closed on blank config)', () => {
+    it('throws on an empty selfAddress instead of matching empty-string mail addresses', () => {
+      // Exact fail-open repro from review: this returned { ok: true }.
+      expect(() => checkIdentityC1({ from: [''], to: [''], cc: [] }, '')).toThrow(
+        'selfAddress must not be blank',
+      );
+    });
+
+    it('throws on a whitespace-only selfAddress', () => {
+      expect(() => checkIdentityC1({ from: [SELF], to: [SELF], cc: [] }, '   ')).toThrow(
+        'selfAddress must not be blank',
+      );
+    });
+
+    it('validates selfAddress before any mail-shape check', () => {
+      // A config error must surface loudly on the first call, not only for
+      // mail that happens to reach the equality stage.
+      expect(() => checkIdentityC1({ from: [], to: [], cc: [] }, '')).toThrow(
+        'selfAddress must not be blank',
+      );
+    });
+
+    it('rejects empty-string mail addresses via IDENTITY_FROM when self is valid', () => {
+      const result = checkIdentityC1({ from: [''], to: [''], cc: [] }, SELF);
+
+      expect(result).toEqual({ ok: false, reason: 'IDENTITY_FROM' });
+    });
+
+    it('trims surrounding whitespace off the configured selfAddress before comparing', () => {
+      const result = checkIdentityC1(
+        { from: [SELF], to: [SELF], cc: [] },
+        '  Bridge-User@Example.COM  ',
+      );
+
+      expect(result).toEqual({ ok: true });
+    });
   });
 
   // The following pin the EXACT priority order from D-P2-5 — each case is
