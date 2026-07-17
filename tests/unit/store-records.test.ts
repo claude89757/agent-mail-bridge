@@ -90,6 +90,7 @@ describe('CommandStore (D-P2-10)', () => {
 
     expect(updated.status).toBe('READY_FOR_DISPATCH');
     expect(updated.updatedAt).toBe('2026-07-17T00:00:02.000Z');
+    expect(updated.now).toBe(updated.updatedAt);
     expect(store.getByMessageId('msg-1@example.com')?.status).toBe('READY_FOR_DISPATCH');
   });
 

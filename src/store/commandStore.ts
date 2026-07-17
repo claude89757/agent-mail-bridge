@@ -6,10 +6,12 @@
  * `assertCommandTransition` BEFORE issuing the UPDATE, so an illegal
  * transition throws `IllegalTransitionError` and leaves the row untouched.
  *
- * Statements are prepared fresh per call rather than cached as fields: each
- * call site gets its own precise generic instantiation (no erasure through a
- * stored field type), and query volume here is far below where prepare()
- * overhead would matter.
+ * Statements are prepared fresh per call rather than cached as fields:
+ * inline preparation keeps each method self-contained and fully inferred,
+ * and at one-mail-at-a-time call volume the prepare() cost cannot matter.
+ * Caching would only cost a per-field generic annotation (e.g.
+ * `Statement<[string], CommandRow>`) — not a loss of precision, just a
+ * style trade nobody needs to make yet.
  */
 import type { Database } from 'better-sqlite3';
 

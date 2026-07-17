@@ -19,7 +19,13 @@ interface IntentRow {
   dry_run: number;
 }
 
-function rowToSummary(row: IntentRow): { id: string; status: string; dryRun: boolean } {
+export interface IntentSummary {
+  id: string;
+  status: string;
+  dryRun: boolean;
+}
+
+function rowToSummary(row: IntentRow): IntentSummary {
   return { id: row.id, status: row.status, dryRun: row.dry_run === 1 };
 }
 
@@ -54,7 +60,7 @@ export class IntentStore {
     return { created: result.changes === 1 };
   }
 
-  getByCommandId(commandId: number): { id: string; status: string; dryRun: boolean } | null {
+  getByCommandId(commandId: number): IntentSummary | null {
     const row = this.db
       .prepare<[number], IntentRow>(
         `SELECT id, status, dry_run FROM dispatch_intents WHERE command_id = ?`,
