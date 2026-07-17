@@ -10,14 +10,23 @@
 import { createHash } from 'node:crypto';
 
 /**
+ * A Message-ID that has passed `normalizeMessageId`. The brand exists so
+ * raw header values and synthetic per-UID keys cannot reach
+ * `deriveIntentId` by mistake — only the normalizer mints this type.
+ */
+export type NormalizedMessageId = string & { readonly __brand: 'NormalizedMessageId' };
+
+/**
  * Normalizes a raw `Message-ID` header value into the canonical form used
  * as the idempotency key: trim whitespace, strip ONE outer `<...>` pair if
- * present, then require the result to be non-empty and contain `@`. Case is
- * preserved. Returns `null` for missing or unusable input — callers fall
- * back to `syntheticMessageKey` (fail closed).
+ * present, then require an `@` with non-empty content on BOTH sides (a bare
+ * or one-sided `@` would collapse distinct malformed mails onto one shared
+ * key, silently swallowing later commands as duplicates). Case is
+ * preserved. Returns `null` for missing (`null`/`undefined`) or unusable
+ * input — callers fall back to `syntheticMessageKey` (fail closed).
  */
-export function normalizeMessageId(raw: string | null): string | null {
-  if (raw === null) {
+export function normalizeMessageId(raw: string | null | undefined): NormalizedMessageId | null {
+  if (raw == null) {
     return null;
   }
 
@@ -25,13 +34,15 @@ export function normalizeMessageId(raw: string | null): string | null {
   const stripped =
     trimmed.startsWith('<') && trimmed.endsWith('>') ? trimmed.slice(1, -1) : trimmed;
 
-  return stripped.length > 0 && stripped.includes('@') ? stripped : null;
+  const at = stripped.indexOf('@');
+  return at > 0 && at < stripped.length - 1 ? (stripped as NormalizedMessageId) : null;
 }
 
 /**
  * Fallback idempotency key for mail with no usable Message-ID: unique per
  * `(uidValidity, uid)` so rejected mail (`NO_MESSAGE_ID`) is still
- * deduplicated across re-delivery of the same UID.
+ * deduplicated across re-delivery of the same UID. Deliberately a plain
+ * string, NOT a `NormalizedMessageId` — synthetic keys never derive intents.
  */
 export function syntheticMessageKey(uidValidity: string, uid: number): string {
   return `synthetic:${uidValidity}:${uid}`;
@@ -43,7 +54,7 @@ export function syntheticMessageKey(uidValidity: string, uid: number): string {
  * The same input always yields the same id, so intent creation stays
  * idempotent under duplicate delivery.
  */
-export function deriveIntentId(normalizedMessageId: string): string {
+export function deriveIntentId(normalizedMessageId: NormalizedMessageId): string {
   const digest = createHash('sha256').update(normalizedMessageId).digest('hex');
   return `di-${digest.slice(0, 16)}`;
 }

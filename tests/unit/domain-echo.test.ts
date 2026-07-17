@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { classifyEcho } from '../../src/domain/echo.js';
+import { normalizeMessageId } from '../../src/domain/mail.js';
 
 // Guards decision D-P2-4 / security control C3: the loop guard that stops
 // the bridge's own outbound replies from being re-ingested as new commands.
@@ -19,7 +20,7 @@ describe('classifyEcho (D-P2-4, control C3)', () => {
 
   it('classifies as echo when the normalized Message-ID matches a known outbox message id', () => {
     const result = classifyEcho(
-      { messageId: 'reply@bridge', outboxHeaderValue: null },
+      { messageId: normalizeMessageId('<reply@bridge>'), outboxHeaderValue: null },
       {
         isKnownOutboxId: () => false,
         isKnownOutboxMessageId: (messageId) => messageId === 'reply@bridge',
@@ -31,7 +32,7 @@ describe('classifyEcho (D-P2-4, control C3)', () => {
 
   it('classifies as not echo when neither factor matches', () => {
     const result = classifyEcho(
-      { messageId: 'unrelated@mail', outboxHeaderValue: 'unrelated-nonce' },
+      { messageId: normalizeMessageId('unrelated@mail'), outboxHeaderValue: 'unrelated-nonce' },
       {
         isKnownOutboxId: () => false,
         isKnownOutboxMessageId: () => false,
@@ -73,7 +74,7 @@ describe('classifyEcho (D-P2-4, control C3)', () => {
 
   it('treats a null outboxHeaderValue as a non-matching factor without calling its predicate', () => {
     const result = classifyEcho(
-      { messageId: 'known@mail', outboxHeaderValue: null },
+      { messageId: normalizeMessageId('known@mail'), outboxHeaderValue: null },
       {
         isKnownOutboxId: () => {
           throw new Error('must not be called with null');
@@ -83,5 +84,23 @@ describe('classifyEcho (D-P2-4, control C3)', () => {
     );
 
     expect(result).toBe(true);
+  });
+
+  it('treats undefined factors like null (upstream parsers may yield either)', () => {
+    // A headers map lookup for an absent header yields undefined, not null;
+    // both must mean "factor does not match" and must never reach a lookup.
+    const result = classifyEcho(
+      { messageId: undefined, outboxHeaderValue: undefined },
+      {
+        isKnownOutboxId: () => {
+          throw new Error('must not be called with undefined');
+        },
+        isKnownOutboxMessageId: () => {
+          throw new Error('must not be called with undefined');
+        },
+      },
+    );
+
+    expect(result).toBe(false);
   });
 });

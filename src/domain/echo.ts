@@ -7,13 +7,20 @@
  * recorded outbox rows are injected by the caller as predicates rather than
  * performed here, so this module never touches the store directly.
  */
+import type { NormalizedMessageId } from './mail.js';
 
 /** The two mail-derived factors the echo gate checks. */
 export interface EchoInput {
-  /** Normalized inbound Message-ID, or `null` if it could not be normalized. */
-  messageId: string | null;
-  /** Value of the inbound `x-amb-outbox-id` header, or `null` if absent. */
-  outboxHeaderValue: string | null;
+  /**
+   * Inbound Message-ID already passed through `normalizeMessageId`;
+   * `null`/`undefined` when missing or not normalizable.
+   */
+  readonly messageId: NormalizedMessageId | null | undefined;
+  /**
+   * Value of the inbound `x-amb-outbox-id` header; `null`/`undefined` when
+   * absent (upstream header maps may yield either).
+   */
+  readonly outboxHeaderValue: string | null | undefined;
 }
 
 /**
@@ -22,8 +29,8 @@ export interface EchoInput {
  * either lookup can independently recognize our own mail.
  */
 export interface EchoLookups {
-  isKnownOutboxId: (id: string) => boolean;
-  isKnownOutboxMessageId: (messageId: string) => boolean;
+  readonly isKnownOutboxId: (id: string) => boolean;
+  readonly isKnownOutboxMessageId: (messageId: string) => boolean;
 }
 
 /**
@@ -33,16 +40,16 @@ export interface EchoLookups {
  *
  * An unknown `x-amb-outbox-id` header is NOT proof of echo by itself — an
  * attacker can forge that header on inbound mail, so only nonces/message-ids
- * we ourselves recorded before sending count. A `null` factor (header
- * absent, or Message-ID that failed normalization) simply does not match;
- * its lookup is not invoked.
+ * we ourselves recorded before sending count. A missing factor
+ * (`null`/`undefined`: header absent, or Message-ID that failed
+ * normalization) simply does not match; its lookup is not invoked.
  */
 export function classifyEcho(input: EchoInput, lookups: EchoLookups): boolean {
-  if (input.outboxHeaderValue !== null && lookups.isKnownOutboxId(input.outboxHeaderValue)) {
+  if (input.outboxHeaderValue != null && lookups.isKnownOutboxId(input.outboxHeaderValue)) {
     return true;
   }
 
-  if (input.messageId !== null && lookups.isKnownOutboxMessageId(input.messageId)) {
+  if (input.messageId != null && lookups.isKnownOutboxMessageId(input.messageId)) {
     return true;
   }
 
