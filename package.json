@@ -1,0 +1,62 @@
+{
+  "name": "agent-mail-bridge",
+  "version": "0.0.0",
+  "description": "Email is the universal, firewall-friendly async transport for AI agents. Control your own coding agent on your own device from your own mailbox.",
+  "type": "module",
+  "license": "MIT",
+  "author": "claude89757",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/claude89757/agent-mail-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/claude89757/agent-mail-bridge/issues"
+  },
+  "homepage": "https://github.com/claude89757/agent-mail-bridge#readme",
+  "keywords": [
+    "email",
+    "imap",
+    "smtp",
+    "ai-agent",
+    "codex",
+    "claude-code",
+    "remote-control",
+    "automation"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.13.1",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "agent-mail-bridge": "./dist/cli/main.js",
+    "amb": "./dist/cli/main.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "eslint": "^10.7.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.64.0",
+    "vitest": "^4.1.10"
+  }
+}
