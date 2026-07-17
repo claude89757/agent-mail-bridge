@@ -8,6 +8,7 @@
 
 Claude Code 专属补充：
 
-- 推进阶段任务用项目命令 `/amb-goal`（可重入，一次会话最多推进一个 Phase 出口）；
+- 推进阶段任务用项目命令 `/amb-goal`（可重入，全链路自主推进；仅在安全红线
+  硬 gate 与外部依赖处暂停，Phase 出口写验收报告供用户异步 review）；
 - 写实现代码前用 superpowers 的 test-driven-development 技能；
   排障用 systematic-debugging；宣称"完成/通过"之前用 verification-before-completion。
