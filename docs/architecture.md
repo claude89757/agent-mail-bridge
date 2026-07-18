@@ -1,8 +1,8 @@
 # Architecture (v0.1)
 
-> Status: skeleton — summarizes the authoritative spec
-> ([roadmap design](superpowers/specs/2026-07-17-agent-mail-bridge-roadmap-design.md), §3).
-> This file grows alongside the implementation phases.
+> Status: in progress — summarizes the authoritative spec
+> ([roadmap design](superpowers/specs/2026-07-17-agent-mail-bridge-roadmap-design.md), §3)
+> and tracks what is actually implemented. Updated at each phase exit.
 
 ## One-liner
 
@@ -42,3 +42,11 @@ either must not touch the core.
 
 Design decisions D1–D10 and their rationale live in the spec (§2); future
 architecture-level changes are recorded in [`adr/`](adr/).
+
+## Implementation status
+
+| Stage | State | Evidence |
+| --- | --- | --- |
+| Event core (`domain/` gates, `store/` state machines + transactional outbox, `application/ingest`, transport seam + in-memory fake) | **done** — Phase 2 exit criteria met under simulated IMAP: duplicate/reorder/crash-restart converge without duplicate commands; self-sent mail classified `SYSTEM_ECHO` 20/20 | [Phase 2 acceptance report](reports/phase-2-acceptance.md) |
+| CLI skeleton (`cli/`: config layer, `doctor` local checks, `setup` writing the `readyAt` first-install fence) | **done** (early subset of Phase 5; daemon-dependent commands are honest placeholders) | [plan + completion record](superpowers/plans/2026-07-18-phase-5-cli-skeleton.md) |
+| Real `imap-smtp` transport, identity gate with the DKIM factor, worktree manager, `CodexDriver`, router/clarification, daemon | **not started** — Phase 3/4; P0-1 read-only evidence collected, P0-2/P0-3 pending external inputs | [P0-1 spike](../spikes/p0-1-imap/README.md), spec §5 |

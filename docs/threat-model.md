@@ -1,10 +1,13 @@
-# Threat Model — v0
+# Threat Model — v0.1 (in progress)
 
-> Status: v0, written before the first line of pipeline code (Phase 0).
-> Sources: roadmap spec §1.3/§3.3/§3.4 and the archived pre-development research.
-> Items marked **[P0-x]** await measurement in the Phase 1 spikes; where reality
-> disagrees with an assumption here, the bridge fails closed and this document
-> plus an ADR are updated first.
+> Status: originally written before the first line of pipeline code (Phase 0);
+> updated at the Phase 2 exit with test evidence for the controls that are now
+> implemented (see the **Evidence** lines under §5 — the
+> [Phase 2 acceptance report](reports/phase-2-acceptance.md) maps each to spec
+> criteria). Sources: roadmap spec §1.3/§3.3/§3.4 and the archived
+> pre-development research. Items marked **[P0-x]** await measurement in the
+> Phase 1 spikes; where reality disagrees with an assumption here, the bridge
+> fails closed and this document plus an ADR are updated first.
 
 ## 1. What the system is
 
@@ -60,6 +63,10 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
 - **C1 — Strict self-addressing.** RFC 5322 addr-spec of `From` and `To` must
   both equal the configured self address; empty `CC`; multi-recipient rejected;
   aliases/`+tag` rejected in v0.1.
+  *Evidence:* `src/domain/identity.ts` + `tests/unit/domain-identity.test.ts`
+  (all five violation classes + priority order); integration: 5/5 forged-From
+  mails rejected in the mixed-stream test
+  (`tests/integration/ingest-pipeline.test.ts`).
 - **C2 — Provider authentication factor.** `Authentication-Results` must show
   `dkim=pass` with the signing domain aligned to the self domain (gmail.com
   publishes DMARC `p=none`, so we must check this ourselves — the provider will
@@ -67,11 +74,23 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
 - **C3 — Echo gate.** Bridge-sent mail carries an own `Message-ID` and
   `X-AMB-Outbox-ID`; both are recorded before send, so inbound copies are
   classified `SYSTEM_ECHO` and never routed.
+  *Evidence:* outbox rows recorded before the send resolves (fake transport
+  mirrors the real order, `tests/helpers/fakeTransport.ts`); 20/20 reflected
+  replies classified `echo`, zero intents
+  (`tests/integration/ingest-pipeline.test.ts`, exact-equality assertion).
 - **C4 — Time fence.** `INTERNALDATE` ≥ persisted `readyAt` from first setup:
   a fresh install can never execute historical mail.
+  *Evidence:* `BEFORE_READY` rejection + fail-closed `NO_READY_AT` when unset
+  (`tests/unit/ingest.test.ts`); `readyAt` is written once by `amb setup` and
+  never overwritten (`tests/unit/cli-setup.test.ts`, first-value-wins test).
 - **C5 — Idempotency.** Message-ID unique index in SQLite; at-least-once
   ingest with exactly-one persistent dispatch intent per control mail; crash /
   redelivery / reorder produce no duplicate dispatch.
+  *Evidence:* 150 shuffled deliveries of 50 mails ⇒ exactly 50 commands/50
+  intents (`tests/integration/ingest-pipeline.test.ts`); rollback at every
+  transaction boundary + file-backed restart
+  (`tests/integration/crash-recovery.test.ts`); intent-id collision fails
+  closed (`src/application/ingest.ts` guard).
 - **C6 — Execution ceiling.** `codex exec --sandbox workspace-write` maximum;
   `danger-full-access` and `--dangerously-bypass-*` are forbidden; mail cannot
   change model, sandbox, or approval settings.
@@ -88,6 +107,11 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
 - **C10 — Credential hygiene.** App password in the OS keychain (macOS;
   Linux story tracked as an open question), never in git/logs/replies; public
   repo enforces secret scanning in CI from day one.
+  *Evidence (partial):* `amb doctor`/`amb setup` verify the credentials env
+  file is exactly mode 0600 in a 0700 directory via `stat` only — the file
+  content is never read by the CLI (`src/cli/doctor.ts`,
+  `tests/unit/cli-doctor.test.ts` incl. the setuid-bit case); gitleaks runs in
+  CI. Keychain storage itself is still the open ADR noted above.
 
 ## 6. Explicit non-goals (v0.1)
 
@@ -104,9 +128,9 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
 
 ## 7. Open measurement items
 
-| Item | Where decided |
-| --- | --- |
-| Self-to-self Gmail `Authentication-Results` shape | P0-3 ADR |
-| IMAP IDLE reconnect / UIDVALIDITY behavior in practice | P0-1 ADR |
-| `codex exec --json` session id extraction and resume semantics | P0-2 ADR |
-| Linux credential storage (libsecret vs encrypted file, 0600) | implementation-phase ADR |
+| Item | Where decided | Status |
+| --- | --- | --- |
+| Self-to-self Gmail `Authentication-Results` shape | P0-3 ADR | waiting on the user's send confirmation (red line 3) |
+| IMAP IDLE reconnect / UIDVALIDITY behavior in practice | P0-1 ADR | read-only portion measured (IDLE stable 3×25 min, UIDVALIDITY constant, push real-time); ADR draft pending the send-visibility half |
+| `codex exec --json` session id extraction and resume semantics | P0-2 ADR | blocked on the local codex CLI version decision |
+| Linux credential storage (libsecret vs encrypted file, 0600) | implementation-phase ADR | open; CLI meanwhile enforces 0600/0700 on the env file (C10) |
