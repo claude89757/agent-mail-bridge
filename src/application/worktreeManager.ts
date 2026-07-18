@@ -27,10 +27,14 @@
  *     function's doc comment, and the "crafted realpath" fake-io test).
  *  3. `repoRoot` must be a git repository (`git rev-parse --git-dir`
  *     succeeds) and `baseRef` must resolve, via
- *     `git rev-parse --verify <ref>^{commit}`, to an explicit commit SHA —
- *     resolution failure rejects with a message naming the requirement
- *     ("must create from an explicit base commit"), never a silent
- *     fallback to some other ref.
+ *     `git rev-parse --verify --end-of-options <ref>^{commit}`, to an
+ *     explicit commit SHA — resolution failure rejects with a message
+ *     naming the requirement ("must create from an explicit base commit"),
+ *     never a silent fallback to some other ref. Two argv-injection guards
+ *     bracket this step: `--end-of-options` stops a hostile baseRef
+ *     spelled like an option from being option-scanned (it is looked up as
+ *     a ref and fails as one), and the returned sha must match
+ *     `COMMIT_SHA_PATTERN` before it may enter the `worktree add` argv.
  *  4. Creation is always `git worktree add --detach <path> <sha>`:
  *     `--detach` means the new worktree claims no branch name and
  *     therefore cannot mutate or conflict with any existing branch. The
@@ -45,6 +49,9 @@
  *     remove` fail on its own, and that failure is propagated verbatim —
  *     fail closed. `force: true` is an explicit, separate decision left to
  *     the caller (Phase 3 proper decides the cleanup policy that sets it).
+ *     One mechanical precondition: `worktreePath` must be absolute (see
+ *     the function's doc comment — it kills the leading-`-`
+ *     option-collision class outright).
  *  6. See the paragraph above: no write-type git subcommand other than
  *     `worktree add`/`worktree remove` ever appears.
  *
@@ -66,7 +73,7 @@
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { access, realpath as fsRealpath } from 'node:fs/promises';
-import { join, sep } from 'node:path';
+import { isAbsolute, join, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFileCb);
@@ -102,7 +109,10 @@ export interface GitIo {
  *    whole point of calling it is to check the TARGET worktree path, which
  *    must NOT exist yet (invariant 4) — calling `realpath` on it would
  *    just reject with ENOENT and convey no more information than `exists`
- *    returning `false` does more directly.
+ *    returning `false` does more directly. Symlink subtlety: the default
+ *    implementation is `access()`-based, which FOLLOWS symlinks — see the
+ *    wiring comment in `buildDefaultWorktreeIo` for why that makes this
+ *    check LOAD-BEARING against a symlink planted at the target path.
  */
 export interface FsIo {
   realpath(path: string): Promise<string>;
@@ -136,6 +146,18 @@ function isEnoentError(error: unknown): boolean {
  * lowercase letters/digits/hyphens (1-64 chars total). No `/`, no `.`, no
  * uppercase — a taskId can never spell a path-traversal segment. */
 const TASK_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/**
+ * What `git rev-parse --verify <ref>^{commit}` may legitimately print: one
+ * full object name — 40 lowercase hex chars in a SHA-1 repo, 64 in a
+ * SHA-256 (`objectFormat = sha256`) repo. Nothing else: git prints object
+ * ids lowercase, so uppercase hex — like interleaved warning lines, empty
+ * output, or localized error text — is an anomaly and fails closed BEFORE
+ * the value is ever placed into the `worktree add` argv (argv-injection
+ * guard: `baseCommit` is the only string in that argv that originates from
+ * a subprocess rather than from this module's own validated inputs).
+ */
+const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /**
  * Invariant 2's defense-in-depth half: independently confirms `worktreePath`
@@ -228,7 +250,11 @@ export async function createTaskWorktree(
     throw new Error(`createTaskWorktree: target worktree path already exists: ${worktreePath}`);
   }
 
-  // Invariant 3, first half: repoRoot must be a git repository.
+  // Invariant 3, first half: repoRoot must be a git repository. No
+  // `--end-of-options` here, judged deliberately: this argv is entirely
+  // constant — no caller-influenced string appears in it (cwd is not argv),
+  // so there is nothing for git's option scanning to misread. The sentinel
+  // guards the NEXT call, whose argv embeds `baseRef`.
   try {
     await io.execFile(['rev-parse', '--git-dir'], realRepoRoot);
   } catch (error) {
@@ -239,11 +265,18 @@ export async function createTaskWorktree(
   }
 
   // Invariant 3, second half: baseRef must resolve to an explicit commit
-  // sha — never a silent fallback.
+  // sha — never a silent fallback. `--end-of-options` (git >= 2.24) makes
+  // the position explicit: everything after it is a revision, never an
+  // option — so a hostile baseRef spelled like an option (e.g.
+  // `--path-format=absolute`) is looked up as a ref (and fails as one)
+  // instead of being option-scanned. Measured on git 2.54: without the
+  // sentinel such values happen to fail too, but only through
+  // version-specific option-parsing accidents — this makes the guarantee
+  // explicit and auditable rather than accidental.
   let baseCommit: string;
   try {
     const { stdout } = await io.execFile(
-      ['rev-parse', '--verify', `${baseRef}^{commit}`],
+      ['rev-parse', '--verify', '--end-of-options', `${baseRef}^{commit}`],
       realRepoRoot,
     );
     baseCommit = stdout.trim();
@@ -252,6 +285,18 @@ export async function createTaskWorktree(
       `createTaskWorktree: baseRef ${JSON.stringify(baseRef)} did not resolve to an explicit ` +
         `base commit (${describeError(error)}) — worktrees must be created from an explicit base commit`,
       { cause: error },
+    );
+  }
+
+  // Second half of the argv-injection guard: `baseCommit` is the only
+  // subprocess-originated string that ever enters a later argv, so it must
+  // look exactly like the one thing rev-parse may print (see
+  // COMMIT_SHA_PATTERN) before `worktree add` gets to see it.
+  if (!COMMIT_SHA_PATTERN.test(baseCommit)) {
+    throw new Error(
+      `createTaskWorktree: rev-parse did not return a well-formed commit sha for baseRef ` +
+        `${JSON.stringify(baseRef)} (got ${JSON.stringify(baseCommit)}) — rejected before it ` +
+        `could enter the worktree-add argv`,
     );
   }
 
@@ -274,21 +319,36 @@ export async function createTaskWorktree(
 
 /**
  * Removes a bridge-owned worktree (D-P3P-2, invariant 5). Deliberately
- * thin: no path validation of its own (there is no `taskId` here, only a
- * caller-supplied `worktreePath`) — `git worktree remove` already fails
- * closed on any path it does not recognize as one of ITS OWN registered
- * worktrees, and on a DIRTY worktree (uncommitted or untracked changes)
- * unless `--force` is passed. That failure is left to propagate to the
- * caller VERBATIM — never swallowed, wrapped, or retried with `--force`
- * automatically. Deciding WHEN to force-remove is Phase 3 proper's
- * cleanup-policy call, not this function's; `force` here is only ever the
- * caller's own explicit input.
+ * thin — ONE mechanical precondition, then git: `worktreePath` must be
+ * absolute. That single check is cheap to audit and kills the whole class
+ * of argv accidents at once — an absolute path always starts with the
+ * platform separator, so it can never be option-scanned by git (a
+ * caller-supplied `--force`/`-f` as `worktreePath` would otherwise reach
+ * git's argv; measured on git 2.54 it happens to die as a usage error, but
+ * that is version-specific parsing luck, not a guarantee), and a relative
+ * path could silently mean something different depending on what
+ * `repoRoot` happens to be.
+ *
+ * Beyond that, no path validation of its own (there is no `taskId` here,
+ * only a caller-supplied `worktreePath`) — `git worktree remove` already
+ * fails closed on any path it does not recognize as one of ITS OWN
+ * registered worktrees, and on a DIRTY worktree (uncommitted or untracked
+ * changes) unless `--force` is passed. That failure is left to propagate
+ * to the caller VERBATIM — never swallowed, wrapped, or retried with
+ * `--force` automatically. Deciding WHEN to force-remove is Phase 3
+ * proper's cleanup-policy call, not this function's; `force` here is only
+ * ever the caller's own explicit input.
  */
 export async function removeTaskWorktree(
   input: { repoRoot: string; worktreePath: string; force?: boolean },
   io: GitIo,
 ): Promise<void> {
   const { repoRoot, worktreePath, force = false } = input;
+  if (!isAbsolute(worktreePath)) {
+    throw new Error(
+      `removeTaskWorktree: worktreePath must be an absolute path, got ${JSON.stringify(worktreePath)}`,
+    );
+  }
   const args = force
     ? ['worktree', 'remove', '--force', worktreePath]
     : ['worktree', 'remove', worktreePath];
@@ -315,6 +375,20 @@ export function buildDefaultWorktreeIo(): GitIo & FsIo {
       return { stdout };
     },
     realpath: (target) => fsRealpath(target),
+    // access()-based, so this FOLLOWS symlinks — and that is load-bearing,
+    // not incidental (C7): a symlink planted at the target path pointing to
+    // an EXISTING directory outside worktreesRoot makes this return true,
+    // so `createTaskWorktree` rejects with "already exists" before git ever
+    // runs. Measured on git 2.54, that early rejection is the ONLY thing
+    // preventing an escape in that shape: a bare `git worktree add` pointed
+    // at such a symlink does NOT refuse — it registers the worktree and
+    // checks the tree out THROUGH the symlink into the outside directory.
+    // The complementary shape — a DANGLING symlink at the target — slips
+    // past this check (access() follows the link, finds nothing, reports
+    // ENOENT => false), and there git's own lstat-based "already exists"
+    // refusal is what backstops, at the cost of two wasted git calls. Both
+    // shapes fail closed, through different layers; both are pinned by
+    // real-git tests in tests/unit/worktree-manager.test.ts.
     async exists(target) {
       try {
         await access(target);

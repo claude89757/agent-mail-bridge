@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -203,6 +204,62 @@ describe('createTaskWorktree (D-P3P-2, C7) -- real git integration', () => {
       rmSync(realTargetDir, { recursive: true, force: true });
       rmSync(linkParentDir, { recursive: true, force: true });
     }
+  });
+
+  it('rejects when a symlink planted AT the target path points to a directory OUTSIDE worktreesRoot, and writes nothing outside the root', async () => {
+    // The plan-named "symlink 逃逸拒绝" scenario (D-P3P-2 集成测试策略), real
+    // git end to end. This rejection is LOAD-BEARING, not redundant belt and
+    // braces: measured on git 2.54, a bare `git worktree add` pointed at a
+    // symlink-to-an-existing-empty-dir does NOT refuse — it happily
+    // registers the worktree and checks the tree out THROUGH the symlink
+    // into the outside directory. The `io.exists` gate (access() follows
+    // symlinks, so the existing outside dir makes it report true) is what
+    // stops that here; see the exists() wiring comment in
+    // `buildDefaultWorktreeIo`.
+    const outsideDir = mkdtempSync(join(tmpdir(), 'amb-worktree-manager-outside-'));
+    symlinkSync(outsideDir, join(worktreesDir, 'task-escape'), 'dir');
+
+    try {
+      await expect(
+        createTaskWorktree(
+          { repoRoot: repo.repoRoot, baseRef: repo.branch, worktreesRoot: worktreesDir, taskId: 'task-escape' },
+          io,
+        ),
+      ).rejects.toThrow(/already exists/);
+
+      // Nothing escaped: the outside directory is still empty, and no
+      // worktree got registered anywhere (worktree list would show the
+      // RESOLVED outside path if the checkout had gone through the symlink).
+      expect(readdirSync(outsideDir)).toEqual([]);
+      const list = git(['worktree', 'list', '--porcelain'], repo.repoRoot);
+      expect(list).not.toContain(realpathSync(outsideDir));
+      expect(list).not.toContain('task-escape');
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects when a DANGLING symlink is planted at the target path (git\'s own lstat-based refusal backstops the access()-based exists gate)', async () => {
+    // Subtlety pinned here: `exists()` is access()-based and access()
+    // FOLLOWS symlinks, so a dangling symlink at the target makes exists()
+    // report false and the create proceeds to git — which then refuses with
+    // its own "already exists" check (lstat-like: it sees the symlink
+    // entry itself). Fail closed either way; this variant just costs two
+    // git calls before the refusal.
+    const danglingTarget = join(worktreesDir, 'task-dangling');
+    symlinkSync(join(worktreesDir, 'does-not-exist'), danglingTarget, 'dir');
+
+    await expect(
+      createTaskWorktree(
+        { repoRoot: repo.repoRoot, baseRef: repo.branch, worktreesRoot: worktreesDir, taskId: 'task-dangling' },
+        io,
+      ),
+    ).rejects.toThrow(/git worktree add failed/);
+
+    // The dangling link target was never created, and nothing registered.
+    expect(existsSync(join(worktreesDir, 'does-not-exist'))).toBe(false);
+    const list = git(['worktree', 'list', '--porcelain'], repo.repoRoot);
+    expect(list).not.toContain('task-dangling');
   });
 });
 
@@ -593,7 +650,7 @@ describe('createTaskWorktree -- worktree add failure is wrapped (fake io)', () =
 });
 
 describe('createTaskWorktree -- call-sequence assertion (invariant 6, fake io)', () => {
-  it('issues EXACTLY [rev-parse --git-dir, rev-parse --verify <ref>^{commit}, worktree add --detach <path> <sha>] on the happy path -- nothing else', async () => {
+  it('issues EXACTLY [rev-parse --git-dir, rev-parse --verify --end-of-options <ref>^{commit}, worktree add --detach <path> <sha>] on the happy path -- nothing else', async () => {
     const sha = 'a'.repeat(40);
     const { io, execFileCalls } = fakeIo({
       realpath: identityRealpath,
@@ -611,12 +668,78 @@ describe('createTaskWorktree -- call-sequence assertion (invariant 6, fake io)',
       io,
     );
 
+    // `--end-of-options` in the rev-parse argv is load-bearing (argv-injection
+    // guard): without it, a hostile baseRef spelled like an option (e.g.
+    // `--path-format=absolute`) is option-scanned by git, and rejection then
+    // depends on version-specific parsing accidents instead of an explicit
+    // guarantee. This exact-argv assertion must go RED if anyone removes it.
     expect(execFileCalls.map((c) => c.args)).toEqual([
       ['rev-parse', '--git-dir'],
-      ['rev-parse', '--verify', 'main^{commit}'],
+      ['rev-parse', '--verify', '--end-of-options', 'main^{commit}'],
       ['worktree', 'add', '--detach', '/fake/worktrees/task1', sha],
     ]);
     expect(result).toEqual({ worktreePath: '/fake/worktrees/task1', baseCommit: sha });
+  });
+});
+
+describe('createTaskWorktree -- rev-parse output validation (argv-injection guard, fake io)', () => {
+  function ioWithVerifyStdout(stdout: string): FakeIoHarness {
+    return fakeIo({
+      realpath: identityRealpath,
+      exists: () => Promise.resolve(false),
+      execFile: (args) => {
+        if (args[0] === 'rev-parse' && args[1] === '--git-dir') return Promise.resolve({ stdout: '.git\n' });
+        if (args[0] === 'rev-parse' && args[1] === '--verify') return Promise.resolve({ stdout });
+        if (args[0] === 'worktree' && args[1] === 'add') return Promise.resolve({ stdout: '' });
+        throw new Error(`unexpected call: ${args.join(' ')}`);
+      },
+    });
+  }
+
+  it('rejects garbage rev-parse stdout (interleaved warning line) without ever invoking worktree add', async () => {
+    const { io, execFileCalls } = ioWithVerifyStdout('warning: xyz\nabc123\n');
+
+    await expect(
+      createTaskWorktree(
+        { repoRoot: '/fake/repo', baseRef: 'main', worktreesRoot: '/fake/worktrees', taskId: 'task1' },
+        io,
+      ),
+    ).rejects.toThrow(/commit sha/);
+
+    expect(execFileCalls).toHaveLength(2);
+    expect(execFileCalls.every((c) => c.args[0] !== 'worktree')).toBe(true);
+  });
+
+  it('rejects UPPERCASE hex rev-parse stdout (git never emits it; anomaly fails closed) without invoking worktree add', async () => {
+    const { io, execFileCalls } = ioWithVerifyStdout(`${'A'.repeat(40)}\n`);
+
+    await expect(
+      createTaskWorktree(
+        { repoRoot: '/fake/repo', baseRef: 'main', worktreesRoot: '/fake/worktrees', taskId: 'task1' },
+        io,
+      ),
+    ).rejects.toThrow(/commit sha/);
+
+    expect(execFileCalls.every((c) => c.args[0] !== 'worktree')).toBe(true);
+  });
+
+  it('accepts a 64-hex sha (sha256 object-format repo) and passes it to worktree add', async () => {
+    const sha256 = 'f'.repeat(64);
+    const { io, execFileCalls } = ioWithVerifyStdout(`${sha256}\n`);
+
+    const result = await createTaskWorktree(
+      { repoRoot: '/fake/repo', baseRef: 'main', worktreesRoot: '/fake/worktrees', taskId: 'task1' },
+      io,
+    );
+
+    expect(result.baseCommit).toBe(sha256);
+    expect(execFileCalls.at(-1)?.args).toEqual([
+      'worktree',
+      'add',
+      '--detach',
+      '/fake/worktrees/task1',
+      sha256,
+    ]);
   });
 });
 
@@ -665,6 +788,29 @@ describe('removeTaskWorktree -- fake io unit tests (D-P3P-2)', () => {
     await expect(
       removeTaskWorktree({ repoRoot: '/fake/repo', worktreePath: '/fake/worktrees/task1' }, io),
     ).rejects.toThrow('fatal: is dirty, use --force');
+  });
+
+  it('rejects a relative worktreePath before any git call', async () => {
+    const { io, execFileCalls } = fakeIo({});
+
+    await expect(
+      removeTaskWorktree({ repoRoot: '/fake/repo', worktreePath: 'relative/path' }, io),
+    ).rejects.toThrow(/absolute/);
+
+    expect(execFileCalls).toEqual([]);
+  });
+
+  it('rejects a worktreePath spelled like a git option (leading dash) before any git call', async () => {
+    // `--force` as a worktreePath would be option-scanned by git if it ever
+    // reached the argv; the absolute-path precondition kills that class
+    // mechanically (an absolute path can never start with `-`).
+    const { io, execFileCalls } = fakeIo({});
+
+    await expect(
+      removeTaskWorktree({ repoRoot: '/fake/repo', worktreePath: '--force' }, io),
+    ).rejects.toThrow(/absolute/);
+
+    expect(execFileCalls).toEqual([]);
   });
 });
 
