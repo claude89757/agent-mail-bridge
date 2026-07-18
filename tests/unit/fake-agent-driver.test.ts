@@ -247,6 +247,21 @@ describe('FakeAgentDriver (D-P3P-3 fake)', () => {
 
       expect(() => driver.streamEvents({ sessionId: null })).toThrow(/no scripted segment/);
     });
+
+    // Fake-only affordance, pinned so nobody "fixes" it into an error (and
+    // so nobody mistakes it for real-driver behavior — a subprocess stream
+    // cannot generally be replayed; see the streamEvents doc comment).
+    it('replays the full segment from the start when called again with the same handle', async () => {
+      const segment: DriverEvent[] = [MESSAGE_EVENT, COMPLETED_EVENT];
+      const driver = new FakeAgentDriver([segment]);
+      const handle = await driver.startTask(taskInput());
+
+      const first = await collect(driver.streamEvents(handle));
+      const second = await collect(driver.streamEvents(handle));
+
+      expect(first).toEqual(segment);
+      expect(second).toEqual(segment);
+    });
   });
 
   describe('close', () => {
@@ -254,6 +269,18 @@ describe('FakeAgentDriver (D-P3P-3 fake)', () => {
       const driver = new FakeAgentDriver([]);
 
       await expect(driver.close()).resolves.toBeUndefined();
+    });
+
+    // Pins the documented divergence from a real driver: this fake's close()
+    // does NOT invalidate the instance (see its doc comment).
+    it('does not invalidate the instance — startTask and streamEvents still work after close', async () => {
+      const driver = new FakeAgentDriver([[COMPLETED_EVENT]]);
+
+      await driver.close();
+
+      const handle = await driver.startTask(taskInput());
+      const events = await collect(driver.streamEvents(handle));
+      expect(events).toEqual([COMPLETED_EVENT]);
     });
   });
 });

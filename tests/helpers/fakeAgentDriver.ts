@@ -203,6 +203,14 @@ export class FakeAgentDriver implements AgentDriver {
    * caller that never iterates the result still gets the "this handle is
    * bogus" failure right at the `streamEvents(...)` call site, instead of
    * only on first `.next()`.
+   *
+   * Calling `streamEvents` AGAIN with the same handle REPLAYS the segment
+   * from the start (the sessionId→segment mapping is never deleted, and
+   * each call builds an independent generator with its own cursor). That
+   * is a fake-only affordance — a real driver's subprocess stream cannot
+   * generally be replayed — so upper-layer code must not come to rely on
+   * it; it exists because deleting the mapping would turn a benign
+   * double-read in a test into a confusing "unknown handle" error.
    */
   streamEvents(handle: AgentTaskHandle): AsyncIterable<DriverEvent> {
     const segment =
@@ -217,7 +225,13 @@ export class FakeAgentDriver implements AgentDriver {
     return streamSegment(segment);
   }
 
-  /** No real subprocess to release. */
+  /**
+   * No real subprocess to release. Deliberately does NOT invalidate the
+   * instance either: `startTask`/`resumeTask`/`streamEvents` keep working
+   * after `close()` — a real driver's `close` would almost certainly make
+   * further calls fail, so tests exercising "driver used after close"
+   * semantics need a hand-rolled stub, not this fake.
+   */
   close(): Promise<void> {
     return Promise.resolve();
   }

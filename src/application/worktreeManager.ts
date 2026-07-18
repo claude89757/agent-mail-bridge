@@ -41,9 +41,12 @@
  *     target path must NOT already exist — `createTaskWorktree` never
  *     reuses or overwrites a path; the `io.exists` check runs BEFORE any
  *     git subcommand at all, so a colliding taskId costs zero subprocess
- *     calls (a performance choice, not a security one — invariant 6's
- *     call-sequence assertion only requires that `worktree add` itself
- *     never runs on this path).
+ *     calls. Only that ORDERING is a performance choice (invariant 6's
+ *     call-sequence assertion merely requires that `worktree add` itself
+ *     never runs on this path) — the check ITSELF is load-bearing: for a
+ *     symlink planted at the target pointing to an existing outside
+ *     directory it is the only thing that prevents an escape (see
+ *     `FsIo.exists` and the `buildDefaultWorktreeIo` wiring comment).
  *  5. `removeTaskWorktree` defaults to NOT passing `--force`: a dirty
  *     worktree (uncommitted or untracked changes) makes `git worktree
  *     remove` fail on its own, and that failure is propagated verbatim —

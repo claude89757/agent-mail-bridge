@@ -19,11 +19,15 @@
  * fake and real alike — see `AgentDriver.streamEvents` below): a stream
  * yields zero or more `agent-message`/`tool-activity` events followed by
  * EXACTLY ONE terminal event (`completed` or `failed`), and that terminal
- * event is the LAST event of the stream — nothing may follow it.
- * `tests/helpers/fakeAgentDriver.ts` enforces this on its own scripts
- * (throwing when a script violates it) specifically so upper-layer tests
- * written against the fake self-verify they are driving a stream shape the
- * real driver is equally bound to produce.
+ * event is the LAST event of the stream — nothing may follow it. A real
+ * driver whose underlying process ends without ever emitting a terminal
+ * event (crash, kill, EOF mid-stream) MUST synthesize a `failed` event
+ * carrying the observed cause as `errorText` before ending its stream —
+ * consumers get to rely on the terminal event existing, not on the agent
+ * subprocess behaving. `tests/helpers/fakeAgentDriver.ts` enforces this on
+ * its own scripts (throwing when a script violates it) specifically so
+ * upper-layer tests written against the fake self-verify they are driving
+ * a stream shape the real driver is equally bound to produce.
  */
 
 /** Static facts about one driver implementation — not per-task state. */
