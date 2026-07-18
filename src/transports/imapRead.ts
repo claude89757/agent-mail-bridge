@@ -193,7 +193,11 @@ export function parseHeaderBlock(
   buffer: Buffer | undefined,
 ): ReadonlyMap<string, readonly string[]> {
   const headers = new Map<string, string[]>();
-  if (buffer === undefined) {
+  // Buffer.isBuffer, not `!== undefined`: imapflow's internal getBuffer
+  // helper can structurally return `false` for a NIL token, which the
+  // published types don't admit — guard by runtime shape instead of the
+  // type-level promise.
+  if (!Buffer.isBuffer(buffer)) {
     return headers;
   }
 
@@ -259,6 +263,15 @@ function addressesToAddrSpecs(list: readonly ImapAddressLike[] | undefined): str
     if (at <= 0 || at === address.length - 1) {
       continue;
     }
+    // Exactly ONE `@` — `identity.ts` documents "real addr-specs handed to
+    // this module never contain more than one `@` (that is the caller's
+    // parser's job to guarantee)", and this transport IS that caller's
+    // parser. An RFC 5322 quoted local-part can legally contain a literal
+    // `@`; a server that copies it into ENVELOPE would otherwise smuggle a
+    // multi-`@` string here. Dropped, fail closed.
+    if (address.lastIndexOf('@') !== at) {
+      continue;
+    }
     result.push(address);
   }
   return result;
@@ -297,10 +310,13 @@ function addressesToAddrSpecs(list: readonly ImapAddressLike[] | undefined): str
  * Given the fence is a security control, fail-closed is the deliberately
  * chosen default here, even though it means a message with a broken date
  * silently never reaches the pipeline. This is a real, non-obvious
- * tradeoff (an alternative design could report/count skipped messages
- * through some future observability channel) called out loudly per this
+ * tradeoff — reporting/counting skipped messages needs an observability
+ * channel the locked `MailTransport` API does not have; the DAEMON batch
+ * owns that story (review adjudication: INTERNALDATE is server-assigned at
+ * delivery time, RFC 3501 §2.3.3, so an external sender has no lever to
+ * weaponize this skip into targeted mail loss). Called out loudly per this
  * project's fail-closed convention (see also `src/domain/authResults.ts`,
- * `src/domain/uid.ts`) and flagged here for reviewer scrutiny.
+ * `src/domain/uid.ts`).
  */
 function resolveInternalDate(value: Date | string | undefined): string | null {
   if (value === undefined) {
@@ -322,13 +338,14 @@ function resolveInternalDate(value: Date | string | undefined): string | null {
  * doc comment) — a `null` result is dropped by the caller, never surfaced
  * as a thrown error.
  *
- * `messageId`: imapflow 1.4.7's `lib/tools.js#parseEnvelope` always assigns
- * a STRING to `envelope.messageId` (verified in source), using `''` — never
- * `undefined` — to represent "the raw ENVELOPE field was absent". Both
- * `undefined` (defensive, in case a future imapflow version differs) and
- * `''` are therefore treated as "absent" here and mapped to `null`; the
- * value is otherwise passed through completely as-is (angle brackets kept,
- * no normalization) per the plan's mapping rule.
+ * `messageId`: per imapflow 1.4.7's `lib/tools.js#parseEnvelope`
+ * (review-verified against a NIL token), a genuinely absent Message-ID
+ * leaves `envelope.messageId` `undefined` — the assignment is skipped by
+ * the `entry[9] && entry[9].value` guard — so `undefined` is the COMMON
+ * absent case, while `''` arises only from an unusual non-NIL-but-empty
+ * token. Both are treated as "absent" here and mapped to `null`; the value
+ * is otherwise passed through completely as-is (angle brackets kept, no
+ * normalization) per the plan's mapping rule.
  */
 function mapFetchedMessage(
   fetched: FetchedMessage,

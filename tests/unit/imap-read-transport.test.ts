@@ -412,6 +412,10 @@ describe('createImapReadTransport (D-P3B2-2/3)', () => {
             { address: 'good@example.com' },
             { address: '@example.com' }, // missing local-part
             { address: 'nohost@' }, // missing host
+            // more than one `@` (an RFC 5322 quoted local-part with a
+            // literal `@` can reach ENVELOPE): violates identity.ts's
+            // documented single-`@` caller contract → dropped
+            { address: 'a@b@c.example' },
           ],
           to: [],
           cc: [],
@@ -446,12 +450,14 @@ describe('createImapReadTransport (D-P3B2-2/3)', () => {
       expect(result[0]?.messageId).toBeNull();
     });
 
-    it('maps an empty-string messageId to null (imapflow\'s own "absent" representation)', async () => {
-      // Verified against imapflow 1.4.7's lib/tools.js: `envelope.messageId
-      // = (getStrValue(entry[9]) || '').toString().trim()` — imapflow never
-      // leaves messageId undefined, it assigns '' when the raw ENVELOPE
-      // field is absent. Treating only `undefined` as "absent" would let a
-      // real absent Message-ID through as messageId: ''.
+    it('maps an empty-string messageId to null (unusual non-NIL-but-empty token)', async () => {
+      // Per imapflow 1.4.7's lib/tools.js#parseEnvelope (review-verified
+      // against a NIL token): a genuinely absent Message-ID leaves
+      // envelope.messageId undefined (the `entry[9] && entry[9].value`
+      // guard skips the assignment) — that common case is the test above.
+      // '' arises only from an unusual non-NIL-but-empty token; treating it
+      // as "absent" too keeps both branches mapping to null instead of
+      // letting messageId: '' through.
       const log: LoggedCall[] = [];
       const mail = fetchedMessageFixture({
         envelope: { messageId: '', from: [], to: [], cc: [] },
