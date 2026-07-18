@@ -25,7 +25,10 @@
  *   4. `openDatabase(dbPath)` — creates the file and runs migrations if new
  *      (also `mkdir -p`s `dbPath`'s parent directory first: unlike
  *      `mkdir -p`'d config directory, SQLite itself never creates missing
- *      parent directories).
+ *      parent directories). A failure here or in step 5 is caught and
+ *      reported as exit 1 WITH a note that step 3's config.json already
+ *      exists and a retry now needs `--force-config` — the config is
+ *      deliberately never rolled back.
  *   5. `metaStore.setReadyAtIfUnset(now.toISOString())` — the first-install
  *      fence, productized. `getReadyAt()` is read BEFORE the write so the
  *      result can truthfully report which case happened (freshly-set vs.
@@ -234,6 +237,16 @@ export function runSetup(args: readonly string[], io: SetupIo, now: Date): Setup
     };
   }
 
+  // Failures from here on happen AFTER config.json already landed in step 3
+  // (deliberately NOT rolled back — setup never deletes user config), so a
+  // plain rerun would bounce off the refuse-overwrite gate above with a
+  // seemingly-unrelated "config already exists" error. Every step-4/5
+  // failure message therefore carries this note naming the written path and
+  // the --force-config escape hatch.
+  const configAlreadyWrittenNote =
+    `note: config was already written to ${configPath} by this run; ` +
+    'rerunning setup after fixing this will need --force-config';
+
   // Step 4 (D-P5S-6): open the database — creates the file and runs
   // migrations if new. SQLite never creates missing parent directories on
   // its own (unlike step 3's config write, which `mkdir -p`s its own), so
@@ -246,7 +259,10 @@ export function runSetup(args: readonly string[], io: SetupIo, now: Date): Setup
   } catch (error) {
     return {
       exitCode: 1,
-      messages: [`amb setup: failed to open database at ${dbPath}: ${describeError(error)}`],
+      messages: [
+        `amb setup: failed to open database at ${dbPath}: ${describeError(error)}`,
+        configAlreadyWrittenNote,
+      ],
     };
   }
 
@@ -263,6 +279,19 @@ export function runSetup(args: readonly string[], io: SetupIo, now: Date): Setup
       priorReadyAt === null
         ? `readyAt set to ${effectiveReadyAt} (first install). Mail received before this instant will NEVER be executed.`
         : `readyAt was already set to ${effectiveReadyAt} (unchanged by this run). Mail received before this instant will NEVER be executed.`;
+  } catch (error) {
+    // Caught and converted, mirroring doctor.ts's readyAtCheck — a
+    // metaStore failure must become an ordinary { exitCode: 1 } result,
+    // never a throw out of runSetup (see the module doc comment's
+    // never-throwing contract). The finally below still closes the handle
+    // before this return completes.
+    return {
+      exitCode: 1,
+      messages: [
+        `amb setup: failed to record readyAt in ${dbPath}: ${describeError(error)}`,
+        configAlreadyWrittenNote,
+      ],
+    };
   } finally {
     db.close();
   }

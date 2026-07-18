@@ -9,7 +9,7 @@ import { buildDefaultDoctorIo } from '../../src/cli/doctor.js';
 import type { EnvLike } from '../../src/cli/paths.js';
 import { resolveConfigPath, resolveDefaultDbPath } from '../../src/cli/paths.js';
 import { runSetup } from '../../src/cli/setup.js';
-import type { SetupIo } from '../../src/cli/setup.js';
+import type { SetupIo, SetupResult } from '../../src/cli/setup.js';
 import { openDatabase } from '../../src/store/database.js';
 import { MetaStore } from '../../src/store/metaStore.js';
 
@@ -236,6 +236,79 @@ describe('runSetup (D-P5S-6)', () => {
     expect(raw.dryRun).toBe(true);
 
     expect(statSync(customDbPath).isFile()).toBe(true);
+  });
+
+  it('step 4 failure AFTER config was written (db parent blocked by a file): exit 1, message carries both the db error and the config-already-written --force-config hint', () => {
+    const credentialsEnvFile = makeValidCredentialsFile();
+    const io = makeIo();
+    // setup mkdir -p's the db parent itself, so a merely-missing parent no
+    // longer fails step 4 -- block it with a regular FILE instead, which
+    // makes the recursive mkdir throw EEXIST (verified real-fs behavior).
+    const blocker = join(dir, 'db-parent-blocker');
+    writeFileSync(blocker, 'not a directory');
+    const dbPath = join(blocker, 'bridge.db');
+
+    const result = runSetup(
+      [
+        '--self',
+        'bridge-user@example.com',
+        '--credentials-env-file',
+        credentialsEnvFile,
+        '--db-path',
+        dbPath,
+      ],
+      io,
+      new Date('2026-07-18T12:00:00.000Z'),
+    );
+
+    expect(result.exitCode).toBe(1);
+    const joined = result.messages.join('\n');
+    expect(joined).toContain('failed to open database');
+    // The retry-trap hint: config.json already landed in step 3 (no
+    // rollback, by design), so the failure must say where it is and that a
+    // rerun now needs --force-config -- otherwise a plain retry bounces off
+    // the refuse-overwrite gate with a seemingly-unrelated error.
+    const configPath = resolveConfigPath(io.env, io.homedir);
+    expect(joined).toContain(configPath);
+    expect(joined).toContain('--force-config');
+    expect(statSync(configPath).isFile()).toBe(true);
+  });
+
+  it('step 5 failure (MetaStore throws on a real db) is caught, not thrown: exit 1, handle closed, config-already-written --force-config hint present', () => {
+    const credentialsEnvFile = makeValidCredentialsFile();
+    const base = makeIo();
+    let handle: ReturnType<typeof openDatabase> | undefined;
+    const io: SetupIo = {
+      ...base,
+      openDatabase: (path) => {
+        const db = openDatabase(path);
+        // A REAL failure mode, no mock: dropping `meta` right after the
+        // migrated open makes MetaStore.getReadyAt()'s prepare throw
+        // "no such table: meta" inside step 5.
+        db.exec('DROP TABLE meta');
+        handle = db;
+        return db;
+      },
+    };
+
+    let result!: SetupResult;
+    expect(() => {
+      result = runSetup(
+        ['--self', 'bridge-user@example.com', '--credentials-env-file', credentialsEnvFile],
+        io,
+        new Date('2026-07-18T12:00:00.000Z'),
+      );
+    }).not.toThrow();
+
+    expect(result.exitCode).toBe(1);
+    const joined = result.messages.join('\n');
+    expect(joined).toContain('readyAt');
+    const configPath = resolveConfigPath(io.env, io.homedir);
+    expect(joined).toContain(configPath);
+    expect(joined).toContain('--force-config');
+    // The finally must still have closed the real handle on the error path.
+    expect(handle).toBeDefined();
+    expect(handle?.open).toBe(false);
   });
 
   it('reports invalid CLI arguments (unknown flag) without throwing, exit 1', () => {
