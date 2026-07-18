@@ -522,7 +522,7 @@ describe('ClarificationStore (D-P4B4-3)', () => {
 
     const created = store.create(
       clarificationInput(commandId, {
-        token: 'AmB-Tok-MiXeD-0001',
+        token: 'Aa-Aa-Tok-0001',
         threadKey: 'thread-abc',
         candidateSetJson: '{"candidates":["a","b"]}',
         candidateSetVersion: 3,
@@ -534,7 +534,7 @@ describe('ClarificationStore (D-P4B4-3)', () => {
     expect(created).toEqual({
       id: 1,
       commandId,
-      token: 'AmB-Tok-MiXeD-0001',
+      token: 'Aa-Aa-Tok-0001',
       threadKey: 'thread-abc',
       candidateSetJson: '{"candidates":["a","b"]}',
       candidateSetVersion: 3,

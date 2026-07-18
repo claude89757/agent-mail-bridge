@@ -32,7 +32,11 @@
   （`AMB_TEST_IMAP_USER` / `AMB_TEST_IMAP_PASS`，目录 0700、文件 0600）；
 - 只在运行时读取；凭据不进入 git、日志、对话与任务提示词；
 - 本仓库是 public 仓库：任何示例、文档、测试夹具一律使用占位地址
-  （如 `bridge-user@example.com`），不出现真实邮箱。
+  （如 `bridge-user@example.com`），不出现真实邮箱；
+- 夹具中 token/密钥类字段的值用**低熵**占位串（如 `Aa-Aa-Tok-0001`）：
+  CI 的 gitleaks generic-api-key 规则对「秘密关键词字段赋值 + 香农熵 ≥ 3.5」
+  报警，编造的假值同样会触发——发现于批次四收尾推送（详见该批次计划的
+  CI 后记）。
 
 ## 工程约定
 

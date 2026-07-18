@@ -197,3 +197,14 @@ Test 并入 `tests/unit/store-database.test.ts`、`tests/unit/store-records.test
 5. **时间戳生产纪律**：`expiresAt`/`now` 一律 `.toISOString()` 形状（readyAt 同款
    doc-only 契约，无运行时校验）——store 字段 doc 已写明，接线者勿引入其他形状。
 6. **候选评分与 thread↔session 映射**依赖 P0-2 session 语义，仍等 codex CLI 决定。
+
+### CI 后记（gitleaks，2026-07-19）
+
+批次首次推送后测试矩阵 4 平台全绿，但 gitleaks 步骤报 2 处 `generic-api-key`：
+`tests/unit/store-records.test.ts` 夹具 `token: 'AmB-Tok-MiXeD-0001'`（两处，
+香农熵 3.64 ≥ 规则阈值 3.5，且落在秘密关键词字段赋值语境）。该值是编造的
+占位夹具、非真实秘密，**无泄漏、无可轮换项**；已换成低熵混合大小写占位
+`Aa-Aa-Tok-0001`（熵 2.84，「token 原样存储不归一化」的测试意图不变——大小写
+折叠仍会使断言失败），约定同步固化进 AGENTS.md 测试凭据一节。`e41e664` 的
+历史 diff 保留原假值，不做历史改写（force push 不在本仓库工作流内，且无
+真实秘密需要抹除）。
