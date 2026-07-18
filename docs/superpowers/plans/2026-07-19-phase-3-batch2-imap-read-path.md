@@ -139,41 +139,41 @@ T4 收尾。写者串行，审查并行（P5S/批次一模式）。
 **Files:** Modify `src/transports/types.ts`、`tests/helpers/fakeTransport.ts`、
 `src/application/ingest.ts`（`X-AMB-Outbox-ID` 读取处）、全部构造 IncomingMail 的测试。
 
-- [ ] 失败测试：fakeTransport 构造多实例头（两个 `Authentication-Results`）→
+- [x] 失败测试：fakeTransport 构造多实例头（两个 `Authentication-Results`）→
   `headers.get('authentication-results')` 返回长度 2 数组按序；ingest 回声判定在
   headers 新形状下既有断言语义全绿；`X-AMB-Outbox-ID` 取首实例的行为有 doc + 测试钉住。
-- [ ] RED → 实现 → GREEN → commit（枚举每处既有测试改动 + 一行理由）。
+- [x] RED → 实现 → GREEN → commit（枚举每处既有测试改动 + 一行理由）。
 
 ### Task 2: ImapReadTransport（fake 客户端单元测试）
 
 **Files:** Create `src/transports/imapRead.ts`、`src/transports/errors.ts`;
 Test `tests/unit/imap-read-transport.test.ts`。
 
-- [ ] 失败测试（脚本化 fake ImapClientLike，记录调用序列）：happy path 映射全字段
+- [x] 失败测试（脚本化 fake ImapClientLike，记录调用序列）：happy path 映射全字段
   （含折叠头展开、同名头聚合、addr-spec 拼接、internalDate ISO 形状）；UIDVALIDITY
   不匹配 → typed error 且 release+logout 已调用；`n:*` 反转（search 返回 `[sinceUid]`）
   → `[]`；fetchOne 返回 false → 跳过不抛；映射中途抛错 → finally 仍 release+logout；
   send → 显式拒绝错误；markProcessed → messageFlagsAdd(['\\Seen']) 调用断言；
   close no-op；header 解析器破损行丢弃、无 ReDoS 正则（审查口径同 authResults）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 3: live 只读集成测试 + liveCreds helper
 
 **Files:** Create `tests/helpers/liveCreds.ts`、`tests/live/imap-read-live.test.ts`;
 Test `tests/unit/live-creds.test.ts`。
 
-- [ ] 失败测试（helper 单元）：临时目录夹具解析两键；缺文件/缺键 → null；值不出现在
+- [x] 失败测试（helper 单元）：临时目录夹具解析两键；缺文件/缺键 → null；值不出现在
   任何错误消息。live 测试文件按 D-P3B2-4 全套断言编写，无凭据环境 skip 路径本地
   可先验证（临时 HOME 指向空目录跑一遍确认 skipped）。
-- [ ] RED → 实现 → GREEN → commit（live 实跑由编排者执行，输出贴完成记录）。
+- [x] RED → 实现 → GREEN → commit（live 实跑由编排者执行，输出贴完成记录）。
 
 ### Task 4: 批次收尾
 
-- [ ] `pnpm lint && pnpm typecheck && pnpm build && pnpm test` 全绿 + live 运行证据；
-- [ ] 本计划追加完成记录（commit 轨迹、测试计数、live 输出摘要、移交说明）；
-- [ ] architecture 实现状态表拆行更新（imap 读路径 done；send/IDLE/daemon 仍 not started）；
+- [x] `pnpm lint && pnpm typecheck && pnpm build && pnpm test` 全绿 + live 运行证据；
+- [x] 本计划追加完成记录（commit 轨迹、测试计数、live 输出摘要、移交说明）；
+- [x] architecture 实现状态表拆行更新（imap 读路径 done；send/IDLE/daemon 仍 not started）；
   threat-model 若有新增证据点则补指针；
-- [ ] commit + push。
+- [x] commit + push。
 
 ---
 
@@ -187,3 +187,51 @@ Test `tests/unit/live-creds.test.ts`。
 - 红线自查：零发信（send 显式拒绝）；live 只读 + skip 语义显式；凭据只在运行时读、
   值不进断言/日志/git；imapflow logger:false 钉住。
 - 无占位符：每任务失败测试具体到断言；live 断言形状化、不含真实内容。
+
+---
+
+## 完成记录（2026-07-19）
+
+全部四任务 + 审查修复闭环。测试基线 22 文件 / 391 测试 →
+**25 文件 / 438 测试**（424 单元/集成 + 11 helper 单元 + 3 live；无凭据环境
+显式 skip 3 个 live 用例，绝不伪装绿）；四件套全绿。
+
+### Commit 轨迹
+
+| Commit | 内容 |
+| --- | --- |
+| `0c17a67` | 本计划落盘 |
+| `5b0f022` | T1 headers 多值化（echo 门首实例语义钉住；RED 阶段连 better-sqlite3 绑定参数错误都真实触发过） |
+| `4ab1843` | T2 ImapReadTransport（25 测试；imapflow devDep→dep；与计划草图的 4 处偏差全部以 imapflow 1.4.7 源码为据） |
+| `e886371` | T3 liveCreds helper + live 只读测试（AMB_LIVE_TEST=1 显式开闸 + 凭据双闸） |
+| `51788bf` | T2 审查修复：单 @ 调用方契约（identity.ts 文档不变量补执行点）+ messageId 来源注释纠向 + Buffer.isBuffer |
+| `a6b995e` | T3 审查修复：live 失败路径地址泄漏面净化 + 凭据读取懒化 + afterAll 守卫 + 2 个解析器钉住测试 |
+
+审查结论：T1 ✅（echo 门双向对抗裁决：伪实例前置方向严格更保守，自触发环方向等价且有
+Message-ID 第二叉冗余）/ T2 ❌→修复→✅（Important：多 @ 地址穿透——RFC 5322 引号局部可含
+字面 @，identity.ts 的单 @ 契约由本 transport 负责执行）/ T3 ✅（Important 建议随手关闭：
+失败路径的服务器撰写错误消息可能带出真实地址，test 1 净化为仅构造器名 + 文件内立清洗规矩）。
+
+### live 只读验证证据（编排者实跑，红线 1 范围内读取，零发信零变更）
+
+```
+AMB_LIVE_TEST=1 pnpm exec vitest run tests/live/imap-read-live.test.ts
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Duration  24.74s
+```
+
+对真实专用测试邮箱端到端验证：① UIDVALIDITY fail-closed 守卫真实生效（经
+`UidValidityChangedError.actual` 反向获取真实值——transport 自身的失败通道即发现机制）；
+② RFC 3501 `n:*` 区间反转陷阱被复用的 `filterNewUids` 端到端中和（巨大 sinceUid → `[]`）；
+③ 真实邮件切片全字段形状正确（ISO internalDate、小写多值 headers、合法 addr-spec）。
+输出仅计数与时长，零地址泄漏。
+
+### 移交说明
+
+- `ImapReadTransport.send` 显式抛错占位 → 等 **红线 3 发信确认**（SMTP 批次连同 P0-1
+  发信半边、P0-3、ADR-0002 定稿一起做）。
+- IDLE watch 长连接 + 连接复用 + markProcessed live 验证 + internalDate 跳过的可观测性
+  通道 → **daemon 批次**。
+- headers 多值原料已就位 → Phase 3 正式阶段把 `checkDkimFactor` 接进 ingest 身份门
+  （仍需 P0-3 实测形态）。
