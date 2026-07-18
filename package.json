@@ -56,13 +56,13 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.1",
     "eslint": "^10.7.0",
-    "imapflow": "^1.4.7",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.64.0",
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1"
+    "better-sqlite3": "^12.11.1",
+    "imapflow": "^1.4.7"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["better-sqlite3"]
