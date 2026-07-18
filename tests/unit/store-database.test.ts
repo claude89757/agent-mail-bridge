@@ -22,12 +22,12 @@ function listTables(db: Db): string[] {
 // Guards decision D-P2-9 (SQLite schema v1) and the pragma/migration contract
 // that the rest of the store layer depends on.
 describe('openDatabase (D-P2-9 schema v1)', () => {
-  it('bumps user_version to the latest known migration (2, D-P3P-4) on a fresh in-memory database', () => {
+  it('bumps user_version to the latest known migration (3, D-P4B4-3) on a fresh in-memory database', () => {
     const db = openDatabase(':memory:');
 
     const userVersion = db.pragma('user_version', { simple: true });
 
-    expect(userVersion).toBe(2);
+    expect(userVersion).toBe(3);
     db.close();
   });
 
@@ -90,13 +90,13 @@ describe('openDatabase (D-P2-9 schema v1)', () => {
       rmSync(dir, { recursive: true, force: true });
     });
 
-    it('re-opening is idempotent (user_version stays 2) and journaling is really WAL', () => {
+    it('re-opening is idempotent (user_version stays 3) and journaling is really WAL', () => {
       const first = openDatabase(dbPath);
       first.close();
 
       const second = openDatabase(dbPath);
 
-      expect(second.pragma('user_version', { simple: true })).toBe(2);
+      expect(second.pragma('user_version', { simple: true })).toBe(3);
       expect(second.pragma('journal_mode', { simple: true })).toBe('wal');
       second.close();
     });
@@ -202,7 +202,17 @@ describe('applyMigrations', () => {
 // updated_at for rows that existed before the column did.
 describe('migration 002 (D-P3P-4 dispatch_intents status_reason/updated_at)', () => {
   it('a fresh database goes straight to user_version 2 with both new columns present', () => {
-    const db = openDatabase(':memory:');
+    // Pinned to migrations 001+002 only (D-P4B4-3 added a real migration 3,
+    // so the default/full ladder no longer stops at 2) — this test's intent
+    // is specifically "migration 002's own effect", not "wherever the ladder
+    // currently ends", so it must not silently start asserting a bigger
+    // number every time a later migration lands. Same fix already applied
+    // once before to the "skips already-applied versions" test below when
+    // migration 002 itself was added.
+    const db = openDatabase(
+      ':memory:',
+      MIGRATIONS.filter((migration) => migration.version <= 2),
+    );
 
     expect(db.pragma('user_version', { simple: true })).toBe(2);
     const columns = db
@@ -246,7 +256,15 @@ describe('migration 002 (D-P3P-4 dispatch_intents status_reason/updated_at)', ()
        VALUES ('di-1', @commandId, 'PENDING', 0, @now)`,
     ).run({ commandId: commandRow.id, now: createdAt });
 
-    applyMigrations(db, MIGRATIONS);
+    // Pinned to migrations 001+002 only for the same reason as the fixture
+    // above (D-P4B4-3's migration 3 exists now): this call's job is "apply
+    // exactly migration 002 on top of the v1 fixture," not "run the whole
+    // current ladder," so it must stay independent of how many more
+    // migrations land after 002.
+    applyMigrations(
+      db,
+      MIGRATIONS.filter((migration) => migration.version <= 2),
+    );
 
     expect(db.pragma('user_version', { simple: true })).toBe(2);
     const row = db
@@ -256,6 +274,76 @@ describe('migration 002 (D-P3P-4 dispatch_intents status_reason/updated_at)', ()
       .get();
     expect(row?.status_reason).toBeNull();
     expect(row?.updated_at).toBe(createdAt);
+    db.close();
+  });
+});
+
+// Guards decision D-P4B4-3 (clarification binding persistence, Phase 4
+// batch 4 plan docs/superpowers/plans/2026-07-19-phase-4-batch4-clarification-binding.md):
+// migration 003 adds the clarification_requests table backing
+// src/store/clarificationStore.ts — the persistence half of threat-model
+// control C8. The table is entirely new (no prior column to add/backfill),
+// unlike migration 002 — so this migration is CREATE-only.
+describe('migration 003 (D-P4B4-3 clarification_requests)', () => {
+  const CLARIFICATION_COLUMNS = [
+    'id',
+    'command_id',
+    'token',
+    'thread_key',
+    'candidate_set_json',
+    'candidate_set_version',
+    'expires_at',
+    'status',
+    'status_reason',
+    'created_at',
+    'updated_at',
+  ];
+
+  it('a fresh database goes straight to user_version 3 with clarification_requests present (STRICT) and its index', () => {
+    const db = openDatabase(':memory:');
+
+    expect(db.pragma('user_version', { simple: true })).toBe(3);
+
+    const columns = db
+      .prepare<[], { name: string }>('PRAGMA table_info(clarification_requests)')
+      .all()
+      .map((row) => row.name);
+    expect(columns.sort()).toEqual([...CLARIFICATION_COLUMNS].sort());
+
+    // STRICT mode: pragma_table_list's `strict` column — same table-valued
+    // pragma style already used above/in the migration 002 block for
+    // table_info, applied here to confirm the `) STRICT;` table qualifier
+    // actually took effect rather than just being present in the SQL text.
+    const tableList = db
+      .prepare<[], { strict: number }>('PRAGMA table_list(clarification_requests)')
+      .all();
+    expect(tableList).toEqual([expect.objectContaining({ strict: 1 })]);
+
+    expect(listTables(db)).toContain('clarification_requests');
+    const indexNames = db
+      .prepare<[], { name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'clarification_requests'",
+      )
+      .all()
+      .map((row) => row.name);
+    expect(indexNames).toContain('idx_clarification_command');
+    db.close();
+  });
+
+  it('a v2 database (migrations 001+002 only) migrates to v3, adding clarification_requests', () => {
+    const v2Migrations = MIGRATIONS.filter((migration) => migration.version <= 2);
+    const db = openDatabase(':memory:', v2Migrations);
+    expect(db.pragma('user_version', { simple: true })).toBe(2);
+    expect(listTables(db)).not.toContain('clarification_requests');
+
+    applyMigrations(db, MIGRATIONS);
+
+    expect(db.pragma('user_version', { simple: true })).toBe(3);
+    const columns = db
+      .prepare<[], { name: string }>('PRAGMA table_info(clarification_requests)')
+      .all()
+      .map((row) => row.name);
+    expect(columns.sort()).toEqual([...CLARIFICATION_COLUMNS].sort());
     db.close();
   });
 });

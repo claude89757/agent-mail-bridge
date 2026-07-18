@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { IllegalTransitionError } from '../../src/domain/errors.js';
 import { openDatabase } from '../../src/store/database.js';
+import { ClarificationStore } from '../../src/store/clarificationStore.js';
+import type { ClarificationCreateInput } from '../../src/store/clarificationStore.js';
 import { CommandStore } from '../../src/store/commandStore.js';
 import type { CommandRecordInput } from '../../src/store/commandStore.js';
 import { IntentStore } from '../../src/store/intentStore.js';
@@ -470,5 +472,229 @@ describe('MetaStore (D-P2-10)', () => {
 
     expect(store.getWatermark('INBOX', '1690000001')).toBe(0);
     expect(store.getWatermark('INBOX', '1690000000')).toBe(100);
+  });
+});
+
+// Guards decision D-P4B4-3 (clarification binding persistence, Phase 4
+// batch 4 plan) over the migration 003 schema: `create` re-enforces the
+// D-P4B4-1 SUPERSEDED-before-insert invariant (never two PENDING rows for
+// one command_id) INSIDE one transaction, and `transition` re-enforces the
+// D-P4B4-1 state machine (src/domain/clarificationState.ts) just before
+// persisting a status change — same read-assert-write shape as
+// IntentStore.transition above.
+describe('ClarificationStore (D-P4B4-3)', () => {
+  let db: Db;
+  let commandStore: CommandStore;
+  let store: ClarificationStore;
+
+  beforeEach(() => {
+    db = openDatabase(':memory:');
+    commandStore = new CommandStore(db);
+    store = new ClarificationStore(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function insertCommand(messageId: string): number {
+    return commandStore.insertIfAbsent(commandInput({ messageId })).record.id;
+  }
+
+  function clarificationInput(
+    commandId: number,
+    overrides: Partial<Omit<ClarificationCreateInput, 'commandId'>> = {},
+  ): ClarificationCreateInput {
+    return {
+      commandId,
+      token: 'amb-tok-0001',
+      threadKey: 'thread-0001',
+      candidateSetJson: '{"candidates":[]}',
+      candidateSetVersion: 1,
+      expiresAt: '2026-07-19T01:00:00.000Z',
+      now: '2026-07-19T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('create then findByThreadKey round-trips the full summary (token stored verbatim, no normalization)', () => {
+    const commandId = insertCommand('msg-1@example.com');
+
+    const created = store.create(
+      clarificationInput(commandId, {
+        token: 'AmB-Tok-MiXeD-0001',
+        threadKey: 'thread-abc',
+        candidateSetJson: '{"candidates":["a","b"]}',
+        candidateSetVersion: 3,
+        expiresAt: '2026-07-19T01:00:00.000Z',
+        now: '2026-07-19T00:00:00.000Z',
+      }),
+    );
+
+    expect(created).toEqual({
+      id: 1,
+      commandId,
+      token: 'AmB-Tok-MiXeD-0001',
+      threadKey: 'thread-abc',
+      candidateSetJson: '{"candidates":["a","b"]}',
+      candidateSetVersion: 3,
+      expiresAt: '2026-07-19T01:00:00.000Z',
+      status: 'PENDING',
+      statusReason: null,
+      createdAt: '2026-07-19T00:00:00.000Z',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+    });
+    expect(store.findByThreadKey('thread-abc')).toEqual(created);
+    expect(store.findByThreadKey('no-such-thread')).toBeUndefined();
+  });
+
+  it('the SUPERSEDED-before-insert invariant (D-P4B4-1): re-issuing for the same command supersedes the old PENDING row before the new one exists', () => {
+    const commandId = insertCommand('msg-1@example.com');
+    const a = store.create(
+      clarificationInput(commandId, { threadKey: 'thread-a', now: '2026-07-19T00:00:00.000Z' }),
+    );
+
+    const b = store.create(
+      clarificationInput(commandId, { threadKey: 'thread-b', now: '2026-07-19T00:05:00.000Z' }),
+    );
+
+    // A: superseded, reason REISSUED, updated_at is B's now (the transition
+    // that superseded it), NOT A's own creation time.
+    expect(store.findByThreadKey('thread-a')).toEqual({
+      ...a,
+      status: 'SUPERSEDED',
+      statusReason: 'REISSUED',
+      updatedAt: '2026-07-19T00:05:00.000Z',
+    });
+    // B: fresh PENDING row, untouched reason.
+    expect(b.status).toBe('PENDING');
+    expect(b.statusReason).toBeNull();
+    expect(store.findPendingByCommandId(commandId)).toEqual([b]);
+  });
+
+  it('create is atomic: a thread_key collision during re-issue rolls back the superseding update too (A stays PENDING, nothing new persists)', () => {
+    const commandId = insertCommand('msg-1@example.com');
+    const a = store.create(
+      clarificationInput(commandId, { threadKey: 'thread-a', now: '2026-07-19T00:00:00.000Z' }),
+    );
+
+    // Re-issuing for the SAME command with A's own thread_key: the
+    // supersede-UPDATE runs first (would flip A to SUPERSEDED), then the
+    // INSERT collides with A's still-occupied thread_key and throws. The
+    // whole transaction — including the UPDATE that ran before the failing
+    // INSERT — must roll back.
+    expect(() =>
+      store.create(
+        clarificationInput(commandId, { threadKey: 'thread-a', now: '2026-07-19T00:05:00.000Z' }),
+      ),
+    ).toThrow();
+
+    expect(store.findByThreadKey('thread-a')).toEqual(a);
+    expect(store.findPendingByCommandId(commandId)).toEqual([a]);
+  });
+
+  it('thread_key UNIQUE: colliding with a DIFFERENT command’s thread_key throws and rolls back that command’s own superseding', () => {
+    const commandA = insertCommand('msg-a@example.com');
+    const commandB = insertCommand('msg-b@example.com');
+    const a = store.create(
+      clarificationInput(commandA, { threadKey: 'thread-a', now: '2026-07-19T00:00:00.000Z' }),
+    );
+    const c = store.create(
+      clarificationInput(commandB, { threadKey: 'thread-c', now: '2026-07-19T00:01:00.000Z' }),
+    );
+
+    // commandB re-issues but supplies commandA's thread_key by mistake: the
+    // supersede-UPDATE for commandB's own PENDING row (C) runs first, then
+    // the INSERT collides with A's thread_key (a DIFFERENT command) and
+    // throws — commandB's own superseding must roll back too.
+    expect(() =>
+      store.create(
+        clarificationInput(commandB, { threadKey: 'thread-a', now: '2026-07-19T00:05:00.000Z' }),
+      ),
+    ).toThrow();
+
+    expect(store.findByThreadKey('thread-c')).toEqual(c);
+    expect(store.findPendingByCommandId(commandB)).toEqual([c]);
+    expect(store.findByThreadKey('thread-a')).toEqual(a);
+  });
+
+  it('create with a nonexistent command_id throws (foreign key enforced — foreign_keys pragma is ON per database.ts)', () => {
+    expect(() => store.create(clarificationInput(999999))).toThrow();
+  });
+
+  describe('transition (D-P4B4-1)', () => {
+    it('PENDING -> CONSUMED persists status/statusReason/updatedAt (updatedAt is the transition now, not the creation now)', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      const created = store.create(
+        clarificationInput(commandId, { now: '2026-07-19T00:00:00.000Z' }),
+      );
+
+      store.transition(created.id, 'CONSUMED', null, '2026-07-19T00:10:00.000Z');
+
+      expect(store.findByThreadKey(created.threadKey)).toEqual({
+        ...created,
+        status: 'CONSUMED',
+        statusReason: null,
+        updatedAt: '2026-07-19T00:10:00.000Z',
+      });
+    });
+
+    it('an illegal transition (CONSUMED -> EXPIRED) throws IllegalTransitionError machine clarification and leaves the row byte-identical', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      const created = store.create(
+        clarificationInput(commandId, { now: '2026-07-19T00:00:00.000Z' }),
+      );
+      store.transition(created.id, 'CONSUMED', null, '2026-07-19T00:10:00.000Z');
+      const beforeIllegalAttempt = store.findByThreadKey(created.threadKey);
+
+      let caught: unknown;
+      try {
+        store.transition(created.id, 'EXPIRED', 'TTL_SWEEP', '2026-07-19T00:20:00.000Z');
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(IllegalTransitionError);
+      expect((caught as IllegalTransitionError).machine).toBe('clarification');
+      // Full-row assert (not just "status unchanged"): also kills a mutant
+      // that writes statusReason/updatedAt before the assert check runs.
+      expect(store.findByThreadKey(created.threadKey)).toEqual(beforeIllegalAttempt);
+    });
+
+    it('throws an explicit error for an unknown id', () => {
+      expect(() =>
+        store.transition(999999, 'CONSUMED', null, '2026-07-19T00:10:00.000Z'),
+      ).toThrow(/no clarification request with id 999999/);
+    });
+
+    it('full chain PENDING -> CONSUMED persists the end state with a null reason', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      const created = store.create(
+        clarificationInput(commandId, { now: '2026-07-19T00:00:00.000Z' }),
+      );
+
+      store.transition(created.id, 'CONSUMED', null, '2026-07-19T00:10:00.000Z');
+
+      const row = store.findByThreadKey(created.threadKey);
+      expect(row?.status).toBe('CONSUMED');
+      expect(row?.statusReason).toBeNull();
+    });
+
+    it('full chain PENDING -> EXPIRED persists the end state with a non-null reason', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      const created = store.create(
+        clarificationInput(commandId, { now: '2026-07-19T00:00:00.000Z' }),
+      );
+
+      store.transition(created.id, 'EXPIRED', 'TTL_SWEEP', '2026-07-19T00:10:00.000Z');
+
+      const row = store.findByThreadKey(created.threadKey);
+      expect(row?.status).toBe('EXPIRED');
+      expect(row?.statusReason).toBe('TTL_SWEEP');
+    });
+
+    // PENDING -> SUPERSEDED is already covered above (the create-reissue
+    // invariant test): that IS the only legal path to SUPERSEDED (D-P4B4-1
+    // doc comment — the store enforces it, not a direct transition() call).
   });
 });

@@ -49,6 +49,31 @@ ALTER TABLE dispatch_intents ADD COLUMN updated_at TEXT;
 UPDATE dispatch_intents SET updated_at = created_at;
 `;
 
+// D-P4B4-3 (Phase 4 batch 4 plan, docs/superpowers/plans/
+// 2026-07-19-phase-4-batch4-clarification-binding.md): adds
+// clarification_requests, the persistence half of threat-model control C8
+// (clarification binding — token + thread + candidate-set version + TTL).
+// The table is entirely new, so — like migration 001 and unlike migration
+// 002 — this is CREATE-only, no ALTER/backfill. `src/store/
+// clarificationStore.ts` is the only reader/writer; `candidate_set_json` is
+// opaque TEXT there (never parsed by this bridge in this batch).
+const SCHEMA_V3 = `
+CREATE TABLE clarification_requests (
+  id INTEGER PRIMARY KEY,
+  command_id INTEGER NOT NULL REFERENCES commands(id),
+  token TEXT NOT NULL,
+  thread_key TEXT NOT NULL UNIQUE,
+  candidate_set_json TEXT NOT NULL,
+  candidate_set_version INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  status_reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;
+CREATE INDEX idx_clarification_command ON clarification_requests(command_id);
+`;
+
 export interface Migration {
   version: number;
   sql: string;
@@ -57,4 +82,5 @@ export interface Migration {
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
+  { version: 3, sql: SCHEMA_V3 },
 ];
