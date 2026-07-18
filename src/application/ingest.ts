@@ -91,7 +91,12 @@
  */
 import { classifyEcho } from '../domain/echo.js';
 import { checkIdentityC1 } from '../domain/identity.js';
-import { deriveIntentId, normalizeMessageId, syntheticMessageKey } from '../domain/mail.js';
+import {
+  deriveIntentId,
+  normalizeMessageId,
+  syntheticMessageKey,
+  type NormalizedMessageId,
+} from '../domain/mail.js';
 import { isWithinWindow, type TimeWindowConfig } from '../domain/timeWindow.js';
 import type { CommandStore } from '../store/commandStore.js';
 import type { IntentStore } from '../store/intentStore.js';
@@ -141,6 +146,18 @@ export interface IngestDeps {
   outboxStore: OutboxStore;
   metaStore: MetaStore;
   config: IngestConfig;
+  /**
+   * Optional override for deriving a dispatch-intent id from a normalized
+   * Message-ID. Test-only seam (Task 10, Phase 2 plan): omitted (the
+   * default), behavior is EXACTLY as before — `deriveIntentId`, unchanged —
+   * so this field exists purely so `tests/integration/crash-recovery.test.ts`
+   * can inject a factory that throws (proving better-sqlite3's
+   * whole-transaction rollback covers the full ingest chain, not just the
+   * step that failed) or one that returns a fixed id (pinning the
+   * fail-closed intent-id-collision guard below). Production callers never
+   * set this.
+   */
+  intentIdFactory?: (id: NormalizedMessageId) => string;
 }
 
 /**
@@ -148,7 +165,15 @@ export interface IngestDeps {
  * the full chain-order rationale.
  */
 export function createIngest(deps: IngestDeps): (mail: IncomingMail, now: Date) => IngestResult {
-  const { db, commandStore, intentStore, outboxStore, metaStore, config } = deps;
+  const {
+    db,
+    commandStore,
+    intentStore,
+    outboxStore,
+    metaStore,
+    config,
+    intentIdFactory = deriveIntentId,
+  } = deps;
 
   return (mail: IncomingMail, now: Date): IngestResult => {
     const run = db.transaction((): IngestResult => {
@@ -237,7 +262,7 @@ export function createIngest(deps: IngestDeps): (mail: IncomingMail, now: Date) 
         };
       }
 
-      const intentId = deriveIntentId(normalizedId);
+      const intentId = intentIdFactory(normalizedId);
       intentStore.createForCommand(intentId, commandId, config.dryRun, nowIso);
       commandStore.updateStatus(commandId, 'READY_FOR_DISPATCH', null, nowIso);
 
