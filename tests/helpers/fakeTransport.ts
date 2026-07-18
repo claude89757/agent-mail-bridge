@@ -174,7 +174,7 @@ export class FakeMailTransport implements MailTransport {
 
     this.deliver({
       messageId: receipt.messageId,
-      headers: new Map([['x-amb-outbox-id', receipt.outboxId]]),
+      headers: new Map([['x-amb-outbox-id', [receipt.outboxId]]]),
       from: [],
       to: [],
       cc: [],

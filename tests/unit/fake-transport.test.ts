@@ -101,6 +101,30 @@ describe('FakeMailTransport (D-P2-11 fake)', () => {
     });
   });
 
+  describe('multi-value headers (D-P3B2-1)', () => {
+    // headers is a multi-value map (ReadonlyMap<string, readonly string[]>)
+    // because Authentication-Results legitimately repeats once per
+    // forwarding hop; a single-value map would silently drop every instance
+    // but the last. The fake transport does no header processing of its own
+    // — deliver/fetchSince pass the IncomingMail through unchanged — so this
+    // pins the SHAPE the seam now carries end to end through the one real
+    // implementation Phase 2/3 tests drive.
+    it('round-trips two same-name header instances through deliver/fetchSince, in occurrence order', async () => {
+      const transport = new FakeMailTransport({ registerOutbox: noopRegisterOutbox });
+      const firstHop = 'mx1.example.com; dkim=pass header.d=example.com';
+      const secondHop = 'mx2.example.com; dkim=fail header.d=example.net';
+      const multiHeaderMail = incomingMail({
+        uid: 1,
+        headers: new Map([['authentication-results', [firstHop, secondHop]]]),
+      });
+
+      transport.deliver(multiHeaderMail);
+
+      const result = await transport.fetchSince(FAKE_MAILBOX, FAKE_UID_VALIDITY, 0);
+      expect(result[0]?.headers.get('authentication-results')).toEqual([firstHop, secondHop]);
+    });
+  });
+
   describe('deliver uid-collision guard', () => {
     // On a real IMAP server a uid is never reused within one uidValidity, so
     // two DIFFERENT mails on the same (mailbox, uidValidity, uid) triple is
@@ -242,7 +266,7 @@ describe('FakeMailTransport (D-P2-11 fake)', () => {
       expect(result).toEqual([
         {
           messageId: receipt.messageId,
-          headers: new Map([['x-amb-outbox-id', receipt.outboxId]]),
+          headers: new Map([['x-amb-outbox-id', [receipt.outboxId]]]),
           from: [],
           to: [],
           cc: [],
@@ -277,7 +301,7 @@ describe('FakeMailTransport (D-P2-11 fake)', () => {
         priorMail,
         {
           messageId: receipt.messageId,
-          headers: new Map([['x-amb-outbox-id', receipt.outboxId]]),
+          headers: new Map([['x-amb-outbox-id', [receipt.outboxId]]]),
           from: [],
           to: [],
           cc: [],

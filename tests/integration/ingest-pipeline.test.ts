@@ -281,7 +281,7 @@ describe('ingest pipeline integration (Phase 2 Task 9)', () => {
           buildMail({
             uid,
             messageId: receipt.messageId,
-            headers: new Map([['x-amb-outbox-id', receipt.outboxId]]),
+            headers: new Map([['x-amb-outbox-id', [receipt.outboxId]]]),
             from: [],
             to: [],
             cc: [],

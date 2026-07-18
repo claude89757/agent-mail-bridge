@@ -220,7 +220,21 @@ export function createIngest(deps: IngestDeps): (mail: IncomingMail, now: Date) 
         return reject('NO_MESSAGE_ID');
       }
 
-      const outboxHeaderValue = mail.headers.get('x-amb-outbox-id') ?? null;
+      // D-P3B2-1: `headers` is a multi-value map (one array of same-name
+      // instances per header name, in occurrence order) because
+      // Authentication-Results legitimately repeats once per forwarding
+      // hop. x-amb-outbox-id is different: the bridge writes EXACTLY ONE
+      // such header on its own outbound mail (see
+      // tests/helpers/fakeTransport.ts's reflectOutbound), so reading only
+      // the FIRST instance is sufficient for every mail this bridge itself
+      // produces. A hostile SECOND instance injected by an attacker cannot
+      // turn a genuinely non-echo mail into a false "echo": classifyEcho
+      // below still requires whatever value is read here to match a
+      // recorded outboxStore id, so an attacker-supplied first instance
+      // simply fails that lookup — the same trust decision the single-value
+      // map made before this change, unaffected by what a later instance in
+      // the same header might contain.
+      const outboxHeaderValue = mail.headers.get('x-amb-outbox-id')?.[0] ?? null;
       const isEcho = classifyEcho(
         { messageId: normalizedId, outboxHeaderValue },
         {

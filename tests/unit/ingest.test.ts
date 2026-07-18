@@ -147,7 +147,7 @@ describe('createIngest / ingestMail (D-P2-8)', () => {
       const result = ingest(
         mail({
           messageId: '<incoming-echo-1@example.com>',
-          headers: new Map([['x-amb-outbox-id', 'outbox-1']]),
+          headers: new Map([['x-amb-outbox-id', ['outbox-1']]]),
           from: [],
           to: [],
           cc: [],
@@ -182,6 +182,42 @@ describe('createIngest / ingestMail (D-P2-8)', () => {
       expect(result.outcome).toBe('echo');
       expect(result.intentId).toBeNull();
       expect(deps.intentStore.countAll()).toBe(0);
+    });
+
+    it('reads x-amb-outbox-id from the FIRST instance only: a real recorded outbox id sitting in a SECOND instance does not make the mail an echo', () => {
+      // Pins D-P3B2-1's first-instance-read semantics unambiguously. If the
+      // gate instead treated ANY instance as sufficient (checking every
+      // element rather than only headers.get(k)?.[0]), this mail — first
+      // instance bogus, second instance a genuinely recorded outbox id —
+      // would misclassify as `echo`. The bridge itself only ever writes ONE
+      // x-amb-outbox-id instance on its own outbound mail (see
+      // tests/helpers/fakeTransport.ts's reflectOutbound), so a second
+      // instance can only come from someone else re-injecting the header;
+      // reading just the first means that injected value is ignored and
+      // this otherwise-valid self-to-self mail proceeds all the way to
+      // `ready`, not `echo`.
+      const deps = setup();
+      deps.outboxStore.create({
+        id: 'outbox-1',
+        messageId: 'reply-1@example.com',
+        commandId: null,
+        kind: 'ACK',
+        now: '2026-07-17T00:00:01.000Z',
+      });
+      const ingest = createIngest(deps);
+
+      const result = ingest(
+        mail({
+          messageId: '<incoming-first-instance-pin@example.com>',
+          headers: new Map([['x-amb-outbox-id', ['not-a-recorded-outbox-id', 'outbox-1']]]),
+        }),
+        new Date('2026-07-17T00:00:05.000Z'),
+      );
+
+      expect(result.outcome).toBe('ready');
+      expect(
+        deps.commandStore.getByMessageId('incoming-first-instance-pin@example.com')?.status,
+      ).toBe('READY_FOR_DISPATCH');
     });
   });
 

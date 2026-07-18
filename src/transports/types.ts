@@ -18,8 +18,21 @@ import type { OutboxKind } from '../store/outboxStore.js';
 export interface IncomingMail {
   /** Raw `Message-ID` header value, unnormalized; `null` when absent. */
   messageId: string | null;
-  /** Header names lowercased; values as received. */
-  headers: ReadonlyMap<string, string>;
+  /**
+   * Header names lowercased; each value is every same-name header instance,
+   * in occurrence order (decision D-P3B2-1). A single-value map would
+   * silently drop evidence: `Authentication-Results` legitimately appears
+   * once per forwarding hop, and `parseAllAuthenticationResults`
+   * (`src/domain/authResults.ts` — the deterministic half of security
+   * control C2's DKIM-alignment check) takes exactly a `readonly string[]`
+   * of raw header values so it can inspect every hop's verdict, not just
+   * whichever instance happened to overwrite the others in a single-value
+   * map. Pre-1.0 internal seam: this is a direct change to the field's
+   * shape, not a compatibility shim or a second parallel field — see
+   * D-P3B2-1 in
+   * docs/superpowers/plans/2026-07-19-phase-3-batch2-imap-read-path.md.
+   */
+  headers: ReadonlyMap<string, readonly string[]>;
   /** Parsed addr-spec strings (no display names). */
   from: readonly string[];
   to: readonly string[];
