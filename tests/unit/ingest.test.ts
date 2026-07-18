@@ -110,6 +110,8 @@ describe('createIngest / ingestMail (D-P2-8)', () => {
       id: expectedIntentId,
       status: 'PENDING',
       dryRun: false,
+      statusReason: null,
+      updatedAt: '2026-07-17T00:00:05.000Z',
     });
   });
 

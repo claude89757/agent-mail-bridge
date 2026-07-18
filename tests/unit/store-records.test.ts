@@ -107,7 +107,7 @@ describe('CommandStore (D-P2-10)', () => {
   });
 });
 
-describe('IntentStore (D-P2-10)', () => {
+describe('IntentStore (D-P2-10 / D-P3P-4)', () => {
   let db: Db;
   let commandStore: CommandStore;
   let store: IntentStore;
@@ -137,6 +137,8 @@ describe('IntentStore (D-P2-10)', () => {
       id: 'di-1',
       status: 'PENDING',
       dryRun: false,
+      statusReason: null,
+      updatedAt: '2026-07-17T00:00:01.000Z',
     });
   });
 
@@ -172,6 +174,129 @@ describe('IntentStore (D-P2-10)', () => {
     const commandId = insertCommand('msg-1@example.com');
 
     expect(store.getByCommandId(commandId)).toBeNull();
+  });
+
+  describe('transition (D-P3P-4)', () => {
+    it('PENDING -> RUNNING persists status/statusReason/updatedAt (updatedAt is the transition now, not the creation now)', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      store.createForCommand('di-1', commandId, false, '2026-07-17T00:00:01.000Z');
+
+      store.transition('di-1', 'RUNNING', null, '2026-07-17T00:05:00.000Z');
+
+      expect(store.getById('di-1')).toEqual({
+        id: 'di-1',
+        status: 'RUNNING',
+        dryRun: false,
+        statusReason: null,
+        updatedAt: '2026-07-17T00:05:00.000Z',
+      });
+    });
+
+    it('an illegal transition (PENDING -> COMPLETED) throws IllegalTransitionError and leaves the row unchanged', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      store.createForCommand('di-1', commandId, false, '2026-07-17T00:00:01.000Z');
+
+      expect(() =>
+        store.transition('di-1', 'COMPLETED', 'oops', '2026-07-17T00:05:00.000Z'),
+      ).toThrow(IllegalTransitionError);
+
+      // Full-row assert: the row must be untouched, not just "status
+      // unchanged" — this also kills a mutant that writes statusReason/
+      // updatedAt before the assert check runs.
+      expect(store.getById('di-1')).toEqual({
+        id: 'di-1',
+        status: 'PENDING',
+        dryRun: false,
+        statusReason: null,
+        updatedAt: '2026-07-17T00:00:01.000Z',
+      });
+    });
+
+    it('throws an explicit error for an unknown id', () => {
+      expect(() =>
+        store.transition('no-such-intent', 'RUNNING', null, '2026-07-17T00:05:00.000Z'),
+      ).toThrow(/no intent with id no-such-intent/);
+    });
+
+    it('full chain PENDING -> RUNNING -> COMPLETED persists the end state with a null reason', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      store.createForCommand('di-1', commandId, false, '2026-07-17T00:00:01.000Z');
+
+      store.transition('di-1', 'RUNNING', null, '2026-07-17T00:01:00.000Z');
+      store.transition('di-1', 'COMPLETED', null, '2026-07-17T00:02:00.000Z');
+
+      expect(store.getById('di-1')).toEqual({
+        id: 'di-1',
+        status: 'COMPLETED',
+        dryRun: false,
+        statusReason: null,
+        updatedAt: '2026-07-17T00:02:00.000Z',
+      });
+    });
+
+    it('full chain PENDING -> RUNNING -> FAILED persists the end state with a non-null reason', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      store.createForCommand('di-1', commandId, false, '2026-07-17T00:00:01.000Z');
+
+      store.transition('di-1', 'RUNNING', null, '2026-07-17T00:01:00.000Z');
+      store.transition('di-1', 'FAILED', 'AGENT_TASK_ERROR', '2026-07-17T00:02:00.000Z');
+
+      expect(store.getById('di-1')).toEqual({
+        id: 'di-1',
+        status: 'FAILED',
+        dryRun: false,
+        statusReason: 'AGENT_TASK_ERROR',
+        updatedAt: '2026-07-17T00:02:00.000Z',
+      });
+    });
+
+    it('PENDING -> SKIPPED_DRY_RUN persists the end state directly (no RUNNING step)', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      store.createForCommand('di-1', commandId, true, '2026-07-17T00:00:01.000Z');
+
+      store.transition('di-1', 'SKIPPED_DRY_RUN', null, '2026-07-17T00:01:00.000Z');
+
+      expect(store.getById('di-1')).toEqual({
+        id: 'di-1',
+        status: 'SKIPPED_DRY_RUN',
+        dryRun: true,
+        statusReason: null,
+        updatedAt: '2026-07-17T00:01:00.000Z',
+      });
+    });
+  });
+
+  describe('findByStatus / getById (D-P3P-4)', () => {
+    it('findByStatus filters among mixed statuses', () => {
+      const commandA = insertCommand('msg-a@example.com');
+      const commandB = insertCommand('msg-b@example.com');
+      const commandC = insertCommand('msg-c@example.com');
+      store.createForCommand('di-a', commandA, false, '2026-07-17T00:00:01.000Z');
+      store.createForCommand('di-b', commandB, false, '2026-07-17T00:00:01.000Z');
+      store.createForCommand('di-c', commandC, false, '2026-07-17T00:00:01.000Z');
+      store.transition('di-b', 'RUNNING', null, '2026-07-17T00:01:00.000Z');
+      store.transition('di-c', 'RUNNING', null, '2026-07-17T00:01:00.000Z');
+      store.transition('di-c', 'COMPLETED', null, '2026-07-17T00:02:00.000Z');
+
+      expect(store.findByStatus('PENDING').map((intent) => intent.id)).toEqual(['di-a']);
+      expect(store.findByStatus('RUNNING').map((intent) => intent.id)).toEqual(['di-b']);
+      expect(store.findByStatus('COMPLETED').map((intent) => intent.id)).toEqual(['di-c']);
+      expect(store.findByStatus('FAILED')).toEqual([]);
+    });
+
+    it('getById round-trips a stored intent and returns undefined for a missing one', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      store.createForCommand('di-1', commandId, true, '2026-07-17T00:00:01.000Z');
+
+      expect(store.getById('di-1')).toEqual({
+        id: 'di-1',
+        status: 'PENDING',
+        dryRun: true,
+        statusReason: null,
+        updatedAt: '2026-07-17T00:00:01.000Z',
+      });
+      expect(store.getById('no-such-intent')).toBeUndefined();
+    });
   });
 });
 

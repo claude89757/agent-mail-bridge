@@ -36,9 +36,25 @@ CREATE TABLE outbox (
 ) STRICT;
 `;
 
+// D-P3P-4 (Phase 3 prework plan batch 1): adds the two columns
+// src/store/intentStore.ts's `transition` needs to persist a status change
+// (status_reason mirrors commands.status_reason; updated_at mirrors
+// commands.updated_at / outbox.updated_at). Both are nullable TEXT — STRICT
+// tables accept nullable-column ADDs without a DEFAULT — and the single
+// UPDATE backfills updated_at for every row that existed before this
+// migration ran, so it is never NULL for a pre-existing row either.
+const SCHEMA_V2 = `
+ALTER TABLE dispatch_intents ADD COLUMN status_reason TEXT;
+ALTER TABLE dispatch_intents ADD COLUMN updated_at TEXT;
+UPDATE dispatch_intents SET updated_at = created_at;
+`;
+
 export interface Migration {
   version: number;
   sql: string;
 }
 
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, sql: SCHEMA_V1 }];
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, sql: SCHEMA_V1 },
+  { version: 2, sql: SCHEMA_V2 },
+];

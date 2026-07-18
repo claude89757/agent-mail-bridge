@@ -522,7 +522,10 @@ describe('buildDefaultDoctorIo (production wiring)', () => {
 
       const db = buildDefaultDoctorIo().openDatabase(dbPath);
 
-      expect(db.pragma('user_version', { simple: true })).toBe(1);
+      // Pinned to the latest known migration (currently 2, D-P3P-4) rather
+      // than a fixed "1": this test's intent is "did migration actually run
+      // to completion", not "the ladder has exactly one rung".
+      expect(db.pragma('user_version', { simple: true })).toBe(2);
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { applyMigrations, openDatabase } from '../../src/store/database.js';
-import type { Migration } from '../../src/store/migrations.js';
+import { MIGRATIONS, type Migration } from '../../src/store/migrations.js';
 
 // Tests must not import better-sqlite3 directly (only src/store/** may);
 // derive the handle type from the public API instead.
@@ -22,12 +22,12 @@ function listTables(db: Db): string[] {
 // Guards decision D-P2-9 (SQLite schema v1) and the pragma/migration contract
 // that the rest of the store layer depends on.
 describe('openDatabase (D-P2-9 schema v1)', () => {
-  it('bumps user_version to 1 on a fresh in-memory database', () => {
+  it('bumps user_version to the latest known migration (2, D-P3P-4) on a fresh in-memory database', () => {
     const db = openDatabase(':memory:');
 
     const userVersion = db.pragma('user_version', { simple: true });
 
-    expect(userVersion).toBe(1);
+    expect(userVersion).toBe(2);
     db.close();
   });
 
@@ -90,13 +90,13 @@ describe('openDatabase (D-P2-9 schema v1)', () => {
       rmSync(dir, { recursive: true, force: true });
     });
 
-    it('re-opening is idempotent (user_version stays 1) and journaling is really WAL', () => {
+    it('re-opening is idempotent (user_version stays 2) and journaling is really WAL', () => {
       const first = openDatabase(dbPath);
       first.close();
 
       const second = openDatabase(dbPath);
 
-      expect(second.pragma('user_version', { simple: true })).toBe(1);
+      expect(second.pragma('user_version', { simple: true })).toBe(2);
       expect(second.pragma('journal_mode', { simple: true })).toBe('wal');
       second.close();
     });
@@ -138,7 +138,15 @@ describe('applyMigrations', () => {
   // migration whose version is already applied must be skipped — its SQL is
   // deliberately invalid here, so any attempt to execute it would throw.
   it('skips already-applied versions via the in-transaction re-check', () => {
-    const db = openDatabase(':memory:'); // schema v1 already applied
+    // Pinned to v1-only (D-P3P-4 added a real migration 2, so the default
+    // ladder no longer stops at 1) — this test's own synthetic 2-entry list
+    // below is independent of the real MIGRATIONS and still needs to start
+    // from a genuinely v1 database for "version 1 is already applied,
+    // therefore skipped" to hold.
+    const db = openDatabase(
+      ':memory:',
+      MIGRATIONS.filter((migration) => migration.version === 1),
+    ); // schema v1 already applied
     const migrations: Migration[] = [
       {
         version: 1,
@@ -185,6 +193,69 @@ describe('applyMigrations', () => {
     expect(() => applyMigrations(db, [{ version: 0, sql: '' }])).toThrow(
       /version must be >= 1/,
     );
+    db.close();
+  });
+});
+
+// Guards decision D-P3P-4 (intent lifecycle, Phase 3 prework plan batch 1):
+// migration 002 adds two nullable columns to dispatch_intents and backfills
+// updated_at for rows that existed before the column did.
+describe('migration 002 (D-P3P-4 dispatch_intents status_reason/updated_at)', () => {
+  it('a fresh database goes straight to user_version 2 with both new columns present', () => {
+    const db = openDatabase(':memory:');
+
+    expect(db.pragma('user_version', { simple: true })).toBe(2);
+    const columns = db
+      .prepare<[], { name: string }>('PRAGMA table_info(dispatch_intents)')
+      .all()
+      .map((row) => row.name);
+    expect(columns).toEqual(expect.arrayContaining(['status_reason', 'updated_at']));
+    db.close();
+  });
+
+  it('a v1 database migrates to v2, backfilling updated_at = created_at and leaving status_reason NULL', () => {
+    // Build the v1 fixture by running ONLY migration 001 through the real
+    // applyMigrations runner — openDatabase already accepts a custom
+    // migrations list (exercised by other tests in this file for different
+    // reasons), so this needs no new seam and no second, hand-rolled schema
+    // string that could drift from SCHEMA_V1: the smallest honest way to pin
+    // "a database that predates migration 002".
+    const v1Migration = MIGRATIONS.find((migration) => migration.version === 1);
+    if (!v1Migration) {
+      throw new Error('test setup: migration version 1 not found in MIGRATIONS');
+    }
+    const db = openDatabase(':memory:', [v1Migration]);
+    expect(db.pragma('user_version', { simple: true })).toBe(1);
+
+    // v1 dispatch_intents has no status_reason/updated_at columns yet, and
+    // command_id is NOT NULL REFERENCES commands(id) with foreign_keys=ON
+    // (set by openDatabase), so a parent commands row is required first.
+    const createdAt = '2026-07-17T00:00:00.000Z';
+    db.prepare<{ messageId: string; now: string }>(
+      `INSERT INTO commands (message_id, status, internal_date, received_at, updated_at)
+       VALUES (@messageId, 'READY_FOR_DISPATCH', @now, @now, @now)`,
+    ).run({ messageId: 'msg-1@example.com', now: createdAt });
+    const commandRow = db
+      .prepare<[string], { id: number }>(`SELECT id FROM commands WHERE message_id = ?`)
+      .get('msg-1@example.com');
+    if (!commandRow) {
+      throw new Error('test setup: command row not found after insert');
+    }
+    db.prepare<{ commandId: number; now: string }>(
+      `INSERT INTO dispatch_intents (id, command_id, status, dry_run, created_at)
+       VALUES ('di-1', @commandId, 'PENDING', 0, @now)`,
+    ).run({ commandId: commandRow.id, now: createdAt });
+
+    applyMigrations(db, MIGRATIONS);
+
+    expect(db.pragma('user_version', { simple: true })).toBe(2);
+    const row = db
+      .prepare<[], { status_reason: string | null; updated_at: string }>(
+        `SELECT status_reason, updated_at FROM dispatch_intents WHERE id = 'di-1'`,
+      )
+      .get();
+    expect(row?.status_reason).toBeNull();
+    expect(row?.updated_at).toBe(createdAt);
     db.close();
   });
 });

@@ -223,7 +223,13 @@ describe('crash recovery at ingestMail transaction boundaries (Phase 2 Task 10)'
       expect(persistedCommand?.uid).toBe(mail1.uid);
 
       const persistedIntent = intentStore2.getByCommandId(firstResult.commandId!);
-      expect(persistedIntent).toEqual({ id: expectedIntentId, status: 'PENDING', dryRun: false });
+      expect(persistedIntent).toEqual({
+        id: expectedIntentId,
+        status: 'PENDING',
+        dryRun: false,
+        statusReason: null,
+        updatedAt: '2026-07-17T00:00:05.000Z',
+      });
 
       expect(metaStore2.getWatermark(mail1.mailbox, mail1.uidValidity)).toBe(mail1.uid);
       expect(metaStore2.getReadyAt()).toBe(READY_AT);
