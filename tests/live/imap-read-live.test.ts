@@ -86,11 +86,13 @@ const ADDR_SPEC_LIKE = /^[^@\s]+@[^@\s]+$/;
 const DIGITS_ONLY = /^[0-9]+$/;
 
 const liveEnabled = process.env.AMB_LIVE_TEST === '1';
-// Module scope, unconditional call, DEFAULT (real) path — see the
-// "IMPLEMENTATION NOTE" above. Never do this anywhere else in the test
-// suite: every other caller of `loadLiveCreds` injects a temp-dir `baseDir`
+// Module scope, DEFAULT (real) path — see the "IMPLEMENTATION NOTE" above.
+// Gated behind `liveEnabled` so a plain `pnpm test` (CI, any dev machine)
+// never even READS the real secrets path, not merely never uses it. Never
+// resolve the default path anywhere else in the test suite: every other
+// caller of `loadLiveCreds` injects a temp-dir `baseDir`
 // (see tests/unit/live-creds.test.ts).
-const creds = loadLiveCreds();
+const creds = liveEnabled ? loadLiveCreds() : null;
 
 describe.skipIf(!liveEnabled || creds === null)('imap read path (live, read-only)', () => {
   let transport: MailTransport;
@@ -149,8 +151,12 @@ describe.skipIf(!liveEnabled || creds === null)('imap read path (live, read-only
     // connection to release — see imapRead.ts's module doc comment); called
     // anyway so this file exercises the full real MailTransport surface a
     // caller would use, and stays correct automatically if that ever
-    // changes.
-    await transport.close();
+    // changes. Guarded: if `beforeAll` failed before the assignment, a bare
+    // `transport.close()` would throw a TypeError that MASKS the real
+    // beforeAll failure in vitest's output.
+    if (transport !== undefined) {
+      await transport.close();
+    }
   });
 
   // TEST ORDER IS LOAD-BEARING: tests 2 and 3 both depend on
@@ -176,9 +182,22 @@ describe.skipIf(!liveEnabled || creds === null)('imap read path (live, read-only
         caught = error;
       }
 
-      expect(caught).toBeInstanceOf(UidValidityChangedError);
+      // LEAK-AVOIDANCE on the FAILURE path (review finding): when the throw
+      // is NOT the expected UidValidityChangedError (e.g. a stale app
+      // password → a server auth error), an `expect(caught).toBeInstanceOf`
+      // failure would let vitest print the raw error — whose message is
+      // authored by imapflow/the IMAP server and can embed the real mailbox
+      // address. Sanitize to the constructor name BEFORE any assertion can
+      // print it; deliberately no `{ cause }` either (vitest prints cause
+      // chains too).
       if (!(caught instanceof UidValidityChangedError)) {
-        throw new Error('unreachable: the assertion above already confirmed this');
+        const name =
+          caught === undefined
+            ? 'no error thrown at all'
+            : caught instanceof Error
+              ? caught.constructor.name
+              : typeof caught;
+        throw new Error(`expected UidValidityChangedError, got: ${name}`);
       }
       realUidValidity = caught.actual;
 
@@ -190,6 +209,15 @@ describe.skipIf(!liveEnabled || creds === null)('imap read path (live, read-only
     TEST_TIMEOUT_MS,
   );
 
+  // FAILURE-OUTPUT WARNING (review finding): tests 2 and 3 call
+  // `fetchSince` UNguarded — an unexpected live failure there surfaces the
+  // raw imapflow/server error through vitest's reporter, which may embed
+  // the real mailbox address. That is accepted here for debuggability
+  // (unlike test 1, whose failure mode is a DESIGNED wrong-type check),
+  // with this compensating rule: raw failure output from this file must be
+  // scrubbed before it is pasted into any committed record or public text
+  // (AGENTS.md red line 2). Happy-path output contains only counts and
+  // durations.
   it(
     'test 2: an absurdly high sinceUid returns [] end-to-end (P0-1 n:* range-inversion quirk, live)',
     async () => {

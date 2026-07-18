@@ -44,6 +44,28 @@ describe('loadLiveCreds (D-P3B2-4)', () => {
     expect(loadLiveCreds(dir)).toEqual({ user: PLACEHOLDER_USER, pass: PLACEHOLDER_PASS });
   });
 
+  // Pins the parser's documented duplicate-key behavior (last occurrence
+  // wins), previously stated only in liveCreds.ts's doc comment.
+  it('lets the last occurrence win when a key is duplicated', () => {
+    writeEnvFile(
+      `AMB_TEST_IMAP_USER=stale-user@example.net\n` +
+        `AMB_TEST_IMAP_USER=${PLACEHOLDER_USER}\n` +
+        `AMB_TEST_IMAP_PASS=${PLACEHOLDER_PASS}\n`,
+    );
+
+    expect(loadLiveCreds(dir)).toEqual({ user: PLACEHOLDER_USER, pass: PLACEHOLDER_PASS });
+  });
+
+  // Pins the parser's documented empty-key behavior (a line starting with
+  // `=` has no key and is skipped, not treated as a mystery entry).
+  it('skips a line whose key before = is empty', () => {
+    writeEnvFile(
+      `=orphan-value\nAMB_TEST_IMAP_USER=${PLACEHOLDER_USER}\nAMB_TEST_IMAP_PASS=${PLACEHOLDER_PASS}\n`,
+    );
+
+    expect(loadLiveCreds(dir)).toEqual({ user: PLACEHOLDER_USER, pass: PLACEHOLDER_PASS });
+  });
+
   it('returns null when the env file does not exist', () => {
     expect(loadLiveCreds(dir)).toBeNull();
   });
