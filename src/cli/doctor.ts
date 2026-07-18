@@ -77,7 +77,8 @@ export interface DoctorContext {
 
 /** The subset of `fs.Stats` a doctor check needs. `mode` is the RAW mode
  * field (includes file-type bits), exactly like `fs.Stats.mode` — callers
- * mask with `& 0o777` to get permission bits (D-P5S-3). */
+ * mask with `& 0o7777` (permission bits AND setuid/setgid/sticky, NOT just
+ * the low 9 permission bits) to check permissions exactly (D-P5S-3). */
 export interface DoctorFileStat {
   readonly isFile: boolean;
   readonly isDirectory: boolean;
@@ -175,8 +176,16 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Masks with `0o7777`, NOT `0o777`: the wider mask keeps the setuid/setgid/
+ * sticky bits (`0o7000`) in the result alongside the rwx permission bits,
+ * so e.g. a `0o4600` file (setuid + owner-rw) is correctly reported as
+ * `0o4600`, not silently narrowed down to `0o600` and treated as an exact
+ * match by the "must be exactly 0600/0700" checks below. `& 0o777` would
+ * make "exactly 0600" a lie for any file carrying one of those bits.
+ */
 function permissionBits(mode: number): number {
-  return mode & 0o777;
+  return mode & 0o7777;
 }
 
 /** e.g. `0o644` -> `"0644"` — matches how permission bits are conventionally
@@ -310,6 +319,10 @@ function credentialsFileCheck(): DoctorCheck {
         // fail closed: an unexpected stat error (e.g. ENOTDIR because a
         // path component is a file, or EACCES) is a check FAILURE, never an
         // uncaught exception that would take down the rest of the report.
+        // Deliberately no `hint` here (unlike every other branch above):
+        // a `chmod 600 …` suggestion would be actively misleading for an
+        // error class it doesn't address (ENOTDIR, EACCES, …) — confirmed
+        // intentional in Task 2's review, not an oversight.
         return {
           status: 'fail',
           message: `failed to check credentials file at ${filePath}: ${describeError(error)}`,

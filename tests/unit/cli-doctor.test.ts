@@ -221,6 +221,40 @@ describe('credentials-file check (D-P5S-3)', () => {
     expect(result.message).toContain(filePath);
   });
 
+  it('fails when the file mode carries extra bits beyond 0600 (setuid set): "exactly 0600" must not be satisfied by masking those bits away', () => {
+    const filePath = join(dir, 'creds.env');
+    writeFileSync(filePath, 'X=1\n');
+    chmodSync(dir, 0o700);
+    chmodSync(filePath, 0o4600);
+
+    // Not every platform/filesystem preserves the setuid bit through chmod
+    // on a REGULAR file (it is only semantically meaningful on
+    // executables); verify what actually landed via the same `io.stat`
+    // the check itself uses before trusting a real-io assertion, and fall
+    // back to an injected fake stat otherwise so this test is
+    // deterministic regardless of platform/CI filesystem.
+    const observedMode = io.stat(filePath)?.mode ?? 0;
+    const setuidPreserved = (observedMode & 0o7000) === 0o4000;
+
+    const result = setuidPreserved
+      ? getCheck('credentials-file').run(ctxFor(filePath))
+      : getCheck('credentials-file').run(
+          baseCtx({
+            config: baseConfig({ credentialsEnvFile: filePath }),
+            io: baseIo({
+              stat: (p) => {
+                if (p === filePath) return { isFile: true, isDirectory: false, mode: 0o4600 };
+                if (p === dir) return { isFile: false, isDirectory: true, mode: 0o700 };
+                return null;
+              },
+            }),
+          }),
+        );
+
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('4600');
+  });
+
   it('fails cleanly (not an uncaught throw) when the path traverses through a non-directory', () => {
     const blocker = join(dir, 'blocker-file');
     writeFileSync(blocker, 'x');
