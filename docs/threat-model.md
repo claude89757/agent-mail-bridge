@@ -129,6 +129,25 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   Phase 4.
 - **C8 — Clarification binding.** Clarification replies must match token +
   thread + candidate-set version and TTL; late or stale replies are quarantined.
+  *Evidence (partial):* the deterministic half is implemented and test-pinned
+  (38 tests). The domain (`src/domain/clarificationState.ts`) provides the
+  fourth state machine (PENDING → CONSUMED/EXPIRED/SUPERSEDED, terminals
+  dead-end) and `checkClarificationBinding`: fail-closed four-factor check
+  with a FIXED reason priority (NOT_PENDING > TOKEN_MISMATCH > VERSION_STALE >
+  EXPIRED_AT_REPLY) so a dead record's status is reported before anything
+  about the reply — an attacker probing a resolved thread learns nothing
+  about its token/version/TTL from the reason; token compares `===` verbatim
+  (no trim, no case folding), missing extractions (`null`) reject, and
+  `now === expiresAt` already rejects (lexicographic ISO comparison, readyAt
+  convention). The store (`src/store/clarificationStore.ts`, migration 003,
+  STRICT + FK enforced) guarantees "never two PENDING per command":
+  `create` supersedes (reason `REISSUED`) then inserts inside ONE
+  transaction — atomicity mutation-verified twice, independently by
+  implementer and reviewer (stripping the transaction wrapper flips the
+  rollback tests red). Still pending: reply parsing + mail format (blocked
+  on the real-device walkthrough, spec line 213), the quarantine ACTION on
+  a rejected verdict and the router lookup wiring (Phase 4 proper), and the
+  EXPIRED trigger timing (daemon batch).
 - **C9 — Outbound hygiene.** Replies go to self only (CC/BCC/attachments
   mechanically impossible), size-capped, with secrets, absolute paths, and
   large diffs redacted.

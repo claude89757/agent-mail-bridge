@@ -694,7 +694,11 @@ describe('ClarificationStore (D-P4B4-3)', () => {
     });
 
     // PENDING -> SUPERSEDED is already covered above (the create-reissue
-    // invariant test): that IS the only legal path to SUPERSEDED (D-P4B4-1
-    // doc comment — the store enforces it, not a direct transition() call).
+    // invariant test): that is the only PRODUCTION path to SUPERSEDED —
+    // D-P4B4-1's invariant is enforced inside create(). A direct
+    // transition(id, 'SUPERSEDED', ...) from PENDING is nonetheless legal in
+    // the domain map and this store would persist it; the invariant lives in
+    // create()'s supersede-then-insert transaction, not in an extra edge
+    // restriction here.
   });
 });

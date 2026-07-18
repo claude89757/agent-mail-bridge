@@ -64,6 +64,13 @@ export type ClarificationStatus = 'PENDING' | 'CONSUMED' | 'EXPIRED' | 'SUPERSED
  * every other status is a dead end, exactly as in `commandState.ts` /
  * `outboxState.ts` / `intentState.ts`.
  */
+// Typed as `Readonly<Record<..., readonly ...[]>>` rather than `as const`
+// (which the plan's illustrative snippet used): under `as const` each edge
+// list is a DISTINCT readonly tuple type, the map's value type becomes a
+// union of those tuples, and `.includes(to)` on that union collapses its
+// parameter type to `never` (TS2345) — it does not compile under any
+// tsconfig. The wide-but-uniform annotation is the same convention the
+// other three machines use.
 export const CLARIFICATION_TRANSITIONS: Readonly<
   Record<ClarificationStatus, readonly ClarificationStatus[]>
 > = {

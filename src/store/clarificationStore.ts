@@ -40,11 +40,33 @@ import {
 
 export interface ClarificationCreateInput {
   commandId: number;
+  /**
+   * Bridge-generated opaque token, stored verbatim. This store accepts ANY
+   * string here, including `''` — the token GENERATOR (out of this batch;
+   * the plan injects the randomness source at the caller) MUST assert
+   * non-empty before calling, following `identity.ts`'s blank-guard
+   * precedent: the domain's `===` binding check would happily match
+   * `'' === ''`, so an empty token must never be persisted in the first
+   * place.
+   */
   token: string;
   threadKey: string;
   candidateSetJson: string;
   candidateSetVersion: number;
+  /**
+   * ISO 8601 instant in `.toISOString()` shape. Stored verbatim; later
+   * compared LEXICOGRAPHICALLY against `now` by the domain's
+   * `checkClarificationBinding` TTL check (readyAt-fence convention:
+   * lexical order agrees with chronological order only inside the
+   * fixed-width `.toISOString()` shape family). Doc-only producer contract,
+   * no runtime shape validation — same stance as `readyAt`; a producer that
+   * writes any other shape silently breaks TTL ordering.
+   */
   expiresAt: string;
+  /**
+   * ISO 8601 instant in `.toISOString()` shape (same producer discipline as
+   * `expiresAt`); becomes both `created_at` and `updated_at` of the new row.
+   */
   now: string;
 }
 
@@ -197,7 +219,9 @@ export class ClarificationStore {
   /**
    * Enforces D-P4B4-1 via `assertClarificationTransition` BEFORE writing: an
    * illegal transition throws `IllegalTransitionError` and the row is left
-   * untouched (the UPDATE never runs).
+   * untouched (the UPDATE never runs). `now` follows the same
+   * `.toISOString()` producer discipline as `ClarificationCreateInput.now`
+   * and lands in `updated_at`.
    */
   transition(id: number, next: ClarificationStatus, reason: string | null, now: string): void {
     const current = this.getRowById(id);

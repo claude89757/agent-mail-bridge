@@ -120,28 +120,28 @@ CREATE INDEX idx_clarification_command ON clarification_requests(command_id);
 
 **Files:** Create `src/domain/clarificationState.ts`; Test `tests/unit/domain-clarification-state.test.ts`。
 
-- [ ] 失败测试：4×4 矩阵；IllegalTransitionError machine='clarification'；绑定判定
+- [x] 失败测试：4×4 矩阵；IllegalTransitionError machine='clarification'；绑定判定
   四理由各至少一例 + null token/version 的 fail closed + 理由优先级（NOT_PENDING 压过
   TOKEN_MISMATCH 压过 VERSION_STALE 压过 EXPIRED_AT_REPLY，构造多重违规夹具）+
   now===expiresAt 边界拒绝 + 全要素正确 → ok。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 2: migration 003 + ClarificationStore
 
 **Files:** Create `src/store/clarificationStore.ts`; Modify `src/store/migrations.ts`;
 Test 并入 `tests/unit/store-database.test.ts`、`tests/unit/store-records.test.ts`。
 
-- [ ] 失败测试：v2 库升 v3 表存在、fresh 直达 3；create/findByThreadKey 往返；
+- [x] 失败测试：v2 库升 v3 表存在、fresh 直达 3；create/findByThreadKey 往返；
   同 command 重发 → 旧 PENDING 全部 SUPERSEDED(REISSUED) 且同事务原子（注入失败回滚）；
   thread_key UNIQUE 冲突；transition read-assert-write（非法转移行不动，unknown id 报错）；
   updated_at=now≠created_at 变异杀手。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 3: 批次收尾
 
-- [ ] 四件套全绿；本计划完成记录（含移交说明：router 接线点、EXPIRED 触发时机归 daemon、
+- [x] 四件套全绿；本计划完成记录（含移交说明：router 接线点、EXPIRED 触发时机归 daemon、
   邮件格式等真机走查）；threat-model C8 补 *Evidence (partial)*；architecture 表；
-- [ ] commit + push。
+- [x] commit + push。
 
 ---
 
@@ -153,3 +153,47 @@ Test 并入 `tests/unit/store-database.test.ts`、`tests/unit/store-records.test
   ISO 字典序比较与 readyAt 栅栏同款。
 - 与 P0-2 无耦合：不含任何 session 概念；与红线 3 无耦合：不发信。
 - 无占位符：每测试点具体（含同事务原子性注入失败用例）。
+
+---
+
+## 完成记录（2026-07-19）
+
+三任务闭环。测试基线 26 文件 / 474 → **27 文件 / 512**（+38 = T1 26 + T2 12，
+509 通过 + 3 live 默认 skip）；四件套全绿。
+
+### Commit 轨迹
+
+| Commit | 内容 |
+| --- | --- |
+| `1ceb25a` | 本计划落盘 |
+| `cd6ebb5` | T1 状态机 + 四要素绑定判定（26 测试，4×4 全矩阵 + 理由优先级组合 + TTL 边界） |
+| `e41e664` | T2 migration 003 + ClarificationStore（12 测试；原子性双碰撞用例经变异验证——剥掉 `db.transaction` 包裹两用例即红；FK 端到端测试） |
+| 本提交 | T3 收尾：两轮审查 Minor 全折入（`Readonly<Record>` 选型内联注释、store 侧 ISO 生产纪律与空 token 前瞻 doc、测试尾注措辞）、threat-model C8 证据、architecture 表 |
+
+### 审查结论
+
+- **T1 ✅ 零必修项。** 要点：NOT_PENDING 优先关闭了 reason 预言机（对已决线程反复猜
+  token 无法从返回理由得到反馈）；`as const` 编译失败的因果 = 联合元组 `.includes()`
+  塌缩为 `never`（与 noUncheckedIndexedAccess 无关）——已按审查建议补内联注释。
+- **T2 ✅ 零 Critical/Important，3 Minor 全折入本提交。** 审查员独立复现变异实证
+  （不信申报、用钉住版 SQL 重杀变异体）；SCHEMA_V3 与锁定 SQL 逐字节 diff 为空；
+  5 处既有测试改动逐条裁定为 migration 阶梯 tip 增长的机械必然（002 回填断言逐行
+  未弱化；`b96e474` 先例申明核实属实）；insert-后-按-UNIQUE-业务键-re-select 与
+  `commandStore.insertIfAbsent` 同款且在事务内正确。
+
+### 移交说明（给 Phase 4 正式阶段 / daemon 批次的六条备忘）
+
+1. **router 接线点**：按 `reply.threadKey` 查 `findByThreadKey` → 查无记录的
+   NO_MATCH 处理在 router 层（不是绑定 reason）→ `checkClarificationBinding` →
+   `ok` 则 transition CONSUMED 并派发所选候选；`{ok:false}` 则按 reason 走隔离。
+   隔离「动作」本批次未定义，归 router 批次。
+2. **EXPIRED 触发时机**（惰性判定 vs daemon 主动扫描）是 daemon 批次的设计点；
+   本批次只定义边合法（domain doc 已写明）。
+3. **邮件格式与提取**：token/候选版本从主题/正文的提取规则等真机走查（spec 213 行）
+   之后再锁；`ExtractedReplyBinding` 已把提取输出形状钉住。
+4. **token 生成器**（随机源由调用方注入，批次外）：落地时必须非空断言
+   （identity.ts 空白守卫先例；`'' === ''` 会匹配）——store 的 create 输入 doc
+   已写明该契约。
+5. **时间戳生产纪律**：`expiresAt`/`now` 一律 `.toISOString()` 形状（readyAt 同款
+   doc-only 契约，无运行时校验）——store 字段 doc 已写明，接线者勿引入其他形状。
+6. **候选评分与 thread↔session 映射**依赖 P0-2 session 语义，仍等 codex CLI 决定。
