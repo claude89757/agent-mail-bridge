@@ -21,11 +21,13 @@
  *
  * `setup` is the one command routed through an INJECTED handler
  * (`io.runSetup`) rather than being implemented inline like the daemon
- * placeholders: Task 4 adds `src/cli/setup.ts` and only modifies
- * `main.ts` to wire the real implementation in as `io.runSetup` --this
- * file's route (`case 'setup': return io.runSetup(rest)`) does not change.
- * `createSetupPlaceholder` below is the Task-3 stub `main.ts` wires in
- * until then.
+ * placeholders: Task 4 added `src/cli/setup.ts` and only modified
+ * `main.ts` to wire the real implementation in as `io.runSetup` -- this
+ * file's route (`case 'setup': return io.runSetup(rest)`) did not change,
+ * exactly as designed. `createSetupPlaceholder` below is the Task-3 stub;
+ * it stays exported purely so `tests/unit/cli-dispatch.test.ts` can keep
+ * pinning dispatch's OWN routing behavior independent of the real `setup`
+ * implementation -- `main.ts` no longer references it.
  *
  * No `process.exit` anywhere here (or anywhere reachable from `dispatch`):
  * every path returns a plain exit-code number. `main.ts` is the only place
@@ -122,10 +124,12 @@ function buildHelpText(): string {
 // ---------------------------------------------------------------------------
 
 /**
- * The Task-3 placeholder `io.runSetup` handler: `amb setup`'s real
- * implementation (D-P5S-6) arrives in Task 4 of the Phase 5 CLI-skeleton
- * plan. Exported (rather than inlined in `main.ts`) so both `main.ts` and
- * `tests/unit/cli-dispatch.test.ts` share one definition of the message.
+ * The Task-3 placeholder `io.runSetup` handler. `amb setup`'s real
+ * implementation (D-P5S-6) landed in Task 4 as `src/cli/setup.ts`'s
+ * `runSetup`, which `main.ts` now wires in instead of this placeholder.
+ * Kept here (exported) only because `tests/unit/cli-dispatch.test.ts` still
+ * uses it to pin dispatch's own routing behavior independently of the real
+ * setup implementation.
  */
 export function createSetupPlaceholder(writer: Writer): (args: readonly string[]) => number {
   return () => {

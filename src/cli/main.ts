@@ -13,13 +13,15 @@
  * `process.exitCode` (not `process.exit()`) so any buffered stdout/stderr
  * writes flush before the process exits.
  */
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 import { buildDefaultDoctorIo } from './doctor.js';
-import { createSetupPlaceholder, dispatch } from './dispatch.js';
+import { dispatch } from './dispatch.js';
 import type { DispatchIo, Writer } from './dispatch.js';
+import { runSetup } from './setup.js';
+import type { SetupIo } from './setup.js';
 
 /**
  * Reads the running package's own version straight from `package.json` at
@@ -49,19 +51,55 @@ function buildRealWriter(): Writer {
   };
 }
 
+/**
+ * Wires `src/cli/setup.ts`'s `SetupIo`. `stat`/`openDatabase` are reused
+ * DIRECTLY from the already-built `doctorIo` (same real functions `doctor`
+ * itself uses) rather than re-derived, so there is exactly one production
+ * implementation of each; `mkdir`/`writeFile`/`chmod` are thin real-`fs`
+ * wrappers matching `SetupIo`'s documented contract.
+ */
+function buildRealSetupIo(doctorIo: ReturnType<typeof buildDefaultDoctorIo>): SetupIo {
+  return {
+    env: process.env,
+    homedir: homedir(),
+    stat: doctorIo.stat,
+    openDatabase: doctorIo.openDatabase,
+    mkdir: (path) => {
+      mkdirSync(path, { recursive: true });
+    },
+    writeFile: (path, content) => {
+      writeFileSync(path, content, 'utf8');
+    },
+    chmod: (path, mode) => {
+      chmodSync(path, mode);
+    },
+  };
+}
+
 function buildRealDispatchIo(): DispatchIo {
   const writer = buildRealWriter();
+  const doctorIo = buildDefaultDoctorIo();
+  const setupIo = buildRealSetupIo(doctorIo);
   return {
     writer,
     version: readPackageVersion(),
     env: process.env,
     homedir: homedir(),
     readFileSync: (path) => readFileSync(path, 'utf8'),
-    doctorIo: buildDefaultDoctorIo(),
-    // Task-3 stub; Task 4 replaces this one line with the real `runSetup`
-    // from `src/cli/setup.ts` (see dispatch.ts's module doc comment --
-    // dispatch.ts's own `case 'setup':` route does not change).
-    runSetup: createSetupPlaceholder(writer),
+    doctorIo,
+    // Task 4: the real `runSetup` (`src/cli/setup.ts`, D-P5S-6) replaces the
+    // Task-3 placeholder here. `dispatch.ts`'s own `case 'setup':` route is
+    // untouched (see its module doc comment) -- only this assembly changed.
+    // `new Date()` appears ONLY here, evaluated at the moment `setup` is
+    // actually invoked, never inside `runSetup` itself (D-P5S-6).
+    runSetup: (args) => {
+      const result = runSetup(args, setupIo, new Date());
+      const print = result.exitCode === 0 ? writer.out : writer.err;
+      for (const message of result.messages) {
+        print(message);
+      }
+      return result.exitCode;
+    },
   };
 }
 

@@ -256,6 +256,84 @@ function configCheck(): DoctorCheck {
 const CREDENTIALS_FILE_MODE = 0o600;
 const CREDENTIALS_DIR_MODE = 0o700;
 
+/**
+ * The stat-only credentials-file hygiene check itself (D-P5S-3), factored
+ * out of `DoctorContext`/`DoctorCheck` so `src/cli/setup.ts` (Task 4, step 2
+ * of D-P5S-6) can run the EXACT same check during `amb setup` without
+ * fabricating an unrelated `DoctorContext` (`configPath`/`configErrors`/
+ * `nodeVersion`/`openDatabase`) it has no use for — it only ever needs a
+ * concrete path and a `stat` function. `credentialsFileCheck` below is now a
+ * thin `DoctorContext`-shaped wrapper around this; its behavior (messages,
+ * hints, statuses) is unchanged by this extraction.
+ */
+export function checkCredentialsFileHygiene(
+  filePath: string,
+  stat: DoctorIo['stat'],
+): CheckResult {
+  try {
+    const fileStat = stat(filePath);
+    if (fileStat === null) {
+      return {
+        status: 'fail',
+        message: `credentials file does not exist: ${filePath}`,
+        hint: `create it, then run: chmod 600 ${filePath}`,
+      };
+    }
+    if (!fileStat.isFile) {
+      return {
+        status: 'fail',
+        message: `credentials file is not a regular file: ${filePath}`,
+        hint: `replace it with a regular file, then run: chmod 600 ${filePath}`,
+      };
+    }
+    if (permissionBits(fileStat.mode) !== CREDENTIALS_FILE_MODE) {
+      return {
+        status: 'fail',
+        message: `credentials file has mode ${formatMode(permissionBits(fileStat.mode))} (must be exactly 0600): ${filePath}`,
+        hint: `chmod 600 ${filePath}`,
+      };
+    }
+
+    const dirPath = dirname(filePath);
+    const dirStat = stat(dirPath);
+    if (dirStat === null) {
+      return {
+        status: 'fail',
+        message: `credentials file parent directory does not exist: ${dirPath}`,
+        hint: `mkdir -p ${dirPath} && chmod 700 ${dirPath}`,
+      };
+    }
+    if (!dirStat.isDirectory) {
+      return {
+        status: 'fail',
+        message: `credentials file parent path is not a directory: ${dirPath}`,
+        hint: `replace it with a directory, then run: chmod 700 ${dirPath}`,
+      };
+    }
+    if (permissionBits(dirStat.mode) !== CREDENTIALS_DIR_MODE) {
+      return {
+        status: 'fail',
+        message: `credentials file parent directory has mode ${formatMode(permissionBits(dirStat.mode))} (must be exactly 0700): ${dirPath}`,
+        hint: `chmod 700 ${dirPath}`,
+      };
+    }
+
+    return { status: 'pass', message: `credentials file permissions OK: ${filePath}` };
+  } catch (error) {
+    // fail closed: an unexpected stat error (e.g. ENOTDIR because a
+    // path component is a file, or EACCES) is a check FAILURE, never an
+    // uncaught exception that would take down the rest of the report.
+    // Deliberately no `hint` here (unlike every other branch above):
+    // a `chmod 600 …` suggestion would be actively misleading for an
+    // error class it doesn't address (ENOTDIR, EACCES, …) — confirmed
+    // intentional in Task 2's review, not an oversight.
+    return {
+      status: 'fail',
+      message: `failed to check credentials file at ${filePath}: ${describeError(error)}`,
+    };
+  }
+}
+
 function credentialsFileCheck(): DoctorCheck {
   return {
     id: 'credentials-file',
@@ -264,70 +342,7 @@ function credentialsFileCheck(): DoctorCheck {
       if (ctx.config === null) {
         return { status: 'fail', message: 'config invalid; cannot check credentials file' };
       }
-
-      const filePath = ctx.config.credentialsEnvFile;
-      try {
-        const fileStat = ctx.io.stat(filePath);
-        if (fileStat === null) {
-          return {
-            status: 'fail',
-            message: `credentials file does not exist: ${filePath}`,
-            hint: `create it, then run: chmod 600 ${filePath}`,
-          };
-        }
-        if (!fileStat.isFile) {
-          return {
-            status: 'fail',
-            message: `credentials file is not a regular file: ${filePath}`,
-            hint: `replace it with a regular file, then run: chmod 600 ${filePath}`,
-          };
-        }
-        if (permissionBits(fileStat.mode) !== CREDENTIALS_FILE_MODE) {
-          return {
-            status: 'fail',
-            message: `credentials file has mode ${formatMode(permissionBits(fileStat.mode))} (must be exactly 0600): ${filePath}`,
-            hint: `chmod 600 ${filePath}`,
-          };
-        }
-
-        const dirPath = dirname(filePath);
-        const dirStat = ctx.io.stat(dirPath);
-        if (dirStat === null) {
-          return {
-            status: 'fail',
-            message: `credentials file parent directory does not exist: ${dirPath}`,
-            hint: `mkdir -p ${dirPath} && chmod 700 ${dirPath}`,
-          };
-        }
-        if (!dirStat.isDirectory) {
-          return {
-            status: 'fail',
-            message: `credentials file parent path is not a directory: ${dirPath}`,
-            hint: `replace it with a directory, then run: chmod 700 ${dirPath}`,
-          };
-        }
-        if (permissionBits(dirStat.mode) !== CREDENTIALS_DIR_MODE) {
-          return {
-            status: 'fail',
-            message: `credentials file parent directory has mode ${formatMode(permissionBits(dirStat.mode))} (must be exactly 0700): ${dirPath}`,
-            hint: `chmod 700 ${dirPath}`,
-          };
-        }
-
-        return { status: 'pass', message: `credentials file permissions OK: ${filePath}` };
-      } catch (error) {
-        // fail closed: an unexpected stat error (e.g. ENOTDIR because a
-        // path component is a file, or EACCES) is a check FAILURE, never an
-        // uncaught exception that would take down the rest of the report.
-        // Deliberately no `hint` here (unlike every other branch above):
-        // a `chmod 600 …` suggestion would be actively misleading for an
-        // error class it doesn't address (ENOTDIR, EACCES, …) — confirmed
-        // intentional in Task 2's review, not an oversight.
-        return {
-          status: 'fail',
-          message: `failed to check credentials file at ${filePath}: ${describeError(error)}`,
-        };
-      }
+      return checkCredentialsFileHygiene(ctx.config.credentialsEnvFile, ctx.io.stat);
     },
   };
 }
