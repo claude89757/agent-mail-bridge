@@ -71,6 +71,15 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   `dkim=pass` with the signing domain aligned to the self domain (gmail.com
   publishes DMARC `p=none`, so we must check this ourselves — the provider will
   not reject forgeries for us). Exact self-to-self form: **[P0-3]**.
+  *Evidence (partial):* the deterministic half is implemented — tolerant
+  parser + fail-closed verdict (`src/domain/authResults.ts`,
+  `tests/unit/domain-auth-results.test.ts`): single-pass comment stripping
+  and the sole `/\s+/` regex keep it ReDoS-free (adversarial review
+  stress-tested 4 MB crafted inputs and parser state-confusion sequences);
+  exact-equality domain match pins subdomains to `DOMAIN_MISMATCH` both
+  directions, and homograph/NFC-variant domains never compare equal (fail
+  closed). Adapting to the measured self-to-self header shape and the
+  `authservId` trust policy remain [P0-3] / Phase 3.
 - **C3 — Echo gate.** Bridge-sent mail carries an own `Message-ID` and
   `X-AMB-Outbox-ID`; both are recorded before send, so inbound copies are
   classified `SYSTEM_ECHO` and never routed.
@@ -99,6 +108,18 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   worktrees and uncommitted changes are never touched; merging back is a local,
   human action. Project targeting is allowlist + realpath, no symlink escape,
   and mail cannot name arbitrary paths.
+  *Evidence (partial):* the worktree manager is implemented
+  (`src/application/worktreeManager.ts`, 38 tests incl. real-git
+  integration): taskId whitelist, realpath prefix containment, base ref
+  resolved to an explicit sha via `rev-parse --verify --end-of-options`
+  with the returned sha format-validated before it may enter the
+  `worktree add` argv, `--detach` always, remove never forces by default,
+  and a call-sequence assertion proves no git subcommand beyond
+  `worktree add`/`remove` ever runs (no checkout/reset). Symlink planted at
+  the target path is rejected by the `exists()` gate
+  (mutation-verified — git alone would check out through it), the dangling
+  variant by git's own refusal. The "mail cannot name arbitrary paths" half
+  is the Phase 3/4 router's allowlist scope, not yet started.
 - **C8 — Clarification binding.** Clarification replies must match token +
   thread + candidate-set version and TTL; late or stale replies are quarantined.
 - **C9 — Outbound hygiene.** Replies go to self only (CC/BCC/attachments

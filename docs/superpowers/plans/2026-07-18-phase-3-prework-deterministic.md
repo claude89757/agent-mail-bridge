@@ -114,36 +114,36 @@ export function assertIntentTransition(from: IntentStatus, to: IntentStatus): vo
 
 **Files:** Create `src/domain/authResults.ts`; Test `tests/unit/domain-auth-results.test.ts`。
 
-- [ ] 失败测试：典型 Gmail 形态头（构造夹具，占位域）解析出 authservId + dkim pass + header.d；header.i 回退（`@example.com` → `example.com`）；多 resinfo/多方法头只取 dkim；大小写归一；破损片段丢弃不 throw；空串/无 dkim → 空数组；checkDkimFactor 三个 reason 各至少一例 + 优先级（无头 vs 有头无 pass vs 有 pass 域不齐）；域比较大小写不敏感精确相等；子域 `mail.example.com` vs `example.com` → DOMAIN_MISMATCH（fail closed 钉住）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] 失败测试：典型 Gmail 形态头（构造夹具，占位域）解析出 authservId + dkim pass + header.d；header.i 回退（`@example.com` → `example.com`）；多 resinfo/多方法头只取 dkim；大小写归一；破损片段丢弃不 throw；空串/无 dkim → 空数组；checkDkimFactor 三个 reason 各至少一例 + 优先级（无头 vs 有头无 pass vs 有 pass 域不齐）；域比较大小写不敏感精确相等；子域 `mail.example.com` vs `example.com` → DOMAIN_MISMATCH（fail closed 钉住）。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 2: worktree manager
 
 **Files:** Create `src/application/worktreeManager.ts`; Test `tests/unit/worktree-manager.test.ts`。
 
-- [ ] 失败测试（真实 git 临时仓库）：创建成功返回 worktreePath+baseCommit 且路径下有检出内容；baseRef 支持分支名/sha/HEAD~1 且解析为确定 sha；目标已存在拒绝；脏 worktree remove 无 force 失败、force 成功；（fake io）taskId 非法字符拒绝（`../x`、大写、下划线、64+ 长度）；symlink 逃逸拒绝（worktreesRoot 下 symlink 指向外部目录）；非 git 仓库拒绝；调用序列断言——除白名单 git 子命令外无其他（尤其无 checkout/reset）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] 失败测试（真实 git 临时仓库）：创建成功返回 worktreePath+baseCommit 且路径下有检出内容；baseRef 支持分支名/sha/HEAD~1 且解析为确定 sha；目标已存在拒绝；脏 worktree remove 无 force 失败、force 成功；（fake io）taskId 非法字符拒绝（`../x`、大写、下划线、64+ 长度）；symlink 逃逸拒绝（worktreesRoot 下 symlink 指向外部目录）；非 git 仓库拒绝；调用序列断言——除白名单 git 子命令外无其他（尤其无 checkout/reset）。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 3: AgentDriver 接口 + FakeAgentDriver
 
 **Files:** Create `src/drivers/types.ts`、`tests/helpers/fakeAgentDriver.ts`; Test `tests/unit/fake-agent-driver.test.ts`; Modify `src/drivers/README.md`（若存在陈旧接口描述则同步，参照 Task 7 先例）。
 
-- [ ] 失败测试：脚本化事件按序 yield 且以终态收尾；违反单终态契约的脚本 → fake throw；startTask/resumeTask 调用记录（input、sessionId）可断言；failOnStart 路径；sessionId 确定性递增；capabilities 形状。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] 失败测试：脚本化事件按序 yield 且以终态收尾；违反单终态契约的脚本 → fake throw；startTask/resumeTask 调用记录（input、sessionId）可断言；failOnStart 路径；sessionId 确定性递增；capabilities 形状。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 4: intent 生命周期（migration 002 + 状态机 + store 扩展）
 
 **Files:** Create `src/domain/intentState.ts`; Modify `src/store/migrations.ts`（MIGRATION 002）、`src/store/intentStore.ts`; Test 并入 `tests/unit/domain-intent-state.test.ts`（新）、`tests/unit/store-database.test.ts`（迁移回填）、`tests/unit/store-records.test.ts`（store 扩展）。
 
-- [ ] 失败测试：全矩阵 5×5 迁移扫描（同 command/outbox 模式）；IllegalTransitionError machine='intent'；v1 库开升 v2：既有 intent 行 updated_at 回填 = created_at、status_reason NULL；transition 写前 assert 失败行不动；findByStatus/getById；PENDING→SKIPPED_DRY_RUN 与 PENDING→RUNNING→COMPLETED/FAILED 各链路持久化断言；Phase 2 既有测试全绿（ingest 建 PENDING 不变）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] 失败测试：全矩阵 5×5 迁移扫描（同 command/outbox 模式）；IllegalTransitionError machine='intent'；v1 库开升 v2：既有 intent 行 updated_at 回填 = created_at、status_reason NULL；transition 写前 assert 失败行不动；findByStatus/getById；PENDING→SKIPPED_DRY_RUN 与 PENDING→RUNNING→COMPLETED/FAILED 各链路持久化断言；Phase 2 既有测试全绿（ingest 建 PENDING 不变）。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 5: 批次收尾
 
-- [ ] `pnpm lint && pnpm typecheck && pnpm build && pnpm test` 全绿，计数贴本文件完成记录段。
-- [ ] 本计划追加「完成记录」：commit 列表 + 测试计数 + 移交说明（哪些接口等 P0-2/P0-3/红线3 的哪个输入接线）。
-- [ ] threat-model C2 补 *Evidence (partial)* 指针（解析与判定已实现待实测形态）；architecture 实现状态表更新。
-- [ ] commit + push。
+- [x] `pnpm lint && pnpm typecheck && pnpm build && pnpm test` 全绿，计数贴本文件完成记录段。
+- [x] 本计划追加「完成记录」：commit 列表 + 测试计数 + 移交说明（哪些接口等 P0-2/P0-3/红线3 的哪个输入接线）。
+- [x] threat-model C2 补 *Evidence (partial)* 指针（解析与判定已实现待实测形态）；architecture 实现状态表更新。
+- [x] commit + push。
 
 ---
 
@@ -153,3 +153,40 @@ export function assertIntentTransition(from: IntentStatus, to: IntentStatus): vo
 - 类型一致性：IllegalTransitionError 复用（machine 字符串扩 'intent'——errors.ts 本就用 string 无需改）；IntentSummary 扩展字段在 T4 内一次定义。
 - 无占位符：每任务失败测试具体；夹具一律占位域（example.com/example.net）。
 - 与批次二（imap-smtp transport 读路径）的边界：本计划零 transport 改动；batch 2 需要独立的 live 只读验证策略（凭据、CI skip 语义），单独成计划。
+
+---
+
+## 完成记录（2026-07-19）
+
+全部四任务 + 审查修复闭环。测试基线 18 文件 / 281 测试 → **22 文件 / 391 测试**（+110）；
+`pnpm lint && pnpm typecheck && pnpm build && pnpm test` 全绿。
+
+### Commit 轨迹
+
+| Commit | 内容 |
+| --- | --- |
+| `f5038e4` | T1 AR 解析器 + DKIM 判定（22 测试） |
+| `81522ec` | T2 worktree manager（31 测试，3 处变异自检） |
+| `391abca` | T1 审查修复：同形域文档姿态 + 空 header.d 回退钉住 + 注释拼接备注 |
+| `f7e1ef1` | T3 AgentDriver 接口 + FakeAgentDriver（23 测试） |
+| `b96e474` | T4 intent 生命周期：migration 002 + 状态机 + store 扩展（24 测试） |
+| `5105131` | T2 审查修复：`--end-of-options` + sha 格式校验 + 真实 symlink 逃逸测试 + remove 绝对路径前置 |
+| `e7ba096` | T3 审查补强：真实驱动崩溃须合成 failed 契约句、fake 重放/close 语义文档+钉住、不变量 4 措辞改准 |
+
+每任务综合审查（spec+quality 单审查员）结论：T1 ✅ / T2 ❌→修复→编排者复核 ✅ / T3 ✅ / T4 ✅。
+审查过程的两个实测要点值得留档：① `rev-parse --verify` 不会屏蔽下一个 argv 的选项扫描，
+无哨兵时安全性只是 git 版本运气（已收紧）；② 对"目标位置预植 symlink 指向外部已存在目录"，
+git 2.54 的 `worktree add` 会穿透 symlink 检出到外部——`exists()` 门是唯一防线（变异验证已钉住）。
+
+### 移交说明（哪些接口等哪个外部输入接线）
+
+- `parseAuthenticationResults`/`checkDkimFactor`（C2 确定性半边）→ 等 **红线 3 发信确认 + P0-3**：
+  实测 self-to-self AR 头形态后做适配 + authservId 信任策略（Phase 3 正式阶段接入 ingest 身份门）。
+- `AgentDriver` 接口（seam 已锁）→ 等 **codex CLI 版本决策 + P0-2**：session id 提取/续跑语义/
+  事件映射决定后落 CodexDriver（若需扩 DriverEvent union，凭 ADR 增补成员）。
+- `createTaskWorktree`/`removeTaskWorktree` → 等 **Phase 3 正式阶段**：dispatcher 接线与
+  cleanup 政策（何时 force）;「邮件不能点名任意路径」的另一半在 router 的 allowlist 范围。
+- intent `transition()`/`findByStatus` → 等 **Phase 3 正式阶段**：daemon 启动时
+  RUNNING→FAILED（`INTERRUPTED_BY_RESTART`）崩溃恢复 + dispatcher 的 PENDING→RUNNING 驱动。
+- 批次二（另立计划）：imap-smtp transport 读路径——需先定 live 只读验证策略
+  （凭据注入、CI skip 语义）。
