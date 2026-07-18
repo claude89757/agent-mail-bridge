@@ -36,9 +36,11 @@ import type { EnvLike } from './paths.js';
 export interface BridgeConfig {
   readonly version: 1;
   /**
-   * Non-empty, contains `@`. This is a config-shape sanity check only, at
-   * load time — NOT the full identity gate (`domain/identity.ts`), which
-   * compares parsed mail addresses against this value at ingest time.
+   * Non-empty, contains `@`, no surrounding whitespace (a padded value is
+   * REJECTED, not silently trimmed — see `validateConfig`). This is a
+   * config-shape sanity check only, at load time — NOT the full identity
+   * gate (`domain/identity.ts`), which compares parsed mail addresses
+   * against this value at ingest time.
    */
   readonly selfAddress: string;
   /**
@@ -93,12 +95,41 @@ function isAbsoluteOrTildePath(value: string): boolean {
 }
 
 /**
+ * `start`/`end` must be zero-padded `'HH:MM'` AND in range: hours 00-23,
+ * minutes 00-59. The range half is deliberately THIS module's job: the
+ * domain's own `assertHHMM` (`domain/timeWindow.ts`) is shape-only by
+ * documented design and assigns the out-of-range class ("25:99") to "the
+ * caller's own config validation" — without the check here such a value
+ * would pass BOTH layers and silently produce wrong `isWithinWindow`
+ * verdicts. The range error names the field path and echoes the offending
+ * value.
+ */
+function validateClockValue(field: 'start' | 'end', value: unknown, errors: string[]): void {
+  if (typeof value !== 'string' || !HHMM.test(value)) {
+    errors.push(`timeWindow.${field}: must match HH:MM`);
+    return;
+  }
+  // The regex guarantees two digits either side of the colon, so Number
+  // can never yield NaN here.
+  const hours = Number(value.slice(0, 2));
+  const minutes = Number(value.slice(3, 5));
+  if (hours > 23 || minutes > 59) {
+    errors.push(
+      `timeWindow.${field}: hours must be 00-23 and minutes 00-59 (got ${JSON.stringify(value)})`,
+    );
+  }
+}
+
+/**
  * Validates a `timeWindow` value against `TimeWindowConfig`'s SHAPE (field
  * presence/types, plus the `HH:MM` / `YYYY-MM-DD` string formats its own
- * doc comments specify). Deliberately does NOT validate semantic validity —
- * e.g. whether `timezone` is a real IANA name. `isWithinWindow` itself
- * (`domain/timeWindow.ts`) is documented to let an invalid timezone throw
- * at call time (fail closed); this loader does not duplicate that check.
+ * doc comments specify) and the `start`/`end` clock-value RANGE (see
+ * `validateClockValue` — the one semantic check the domain explicitly
+ * delegates to config validation). Beyond that it deliberately does NOT
+ * validate semantic validity — e.g. whether `timezone` is a real IANA
+ * name. `isWithinWindow` itself (`domain/timeWindow.ts`) is documented to
+ * let an invalid timezone throw at call time (fail closed); this loader
+ * does not duplicate that check.
  *
  * Appends to the shared `errors` array (rather than returning its own)
  * because `validateConfig` aggregates every problem across the whole
@@ -126,14 +157,10 @@ function validateTimeWindow(raw: unknown, errors: string[]): TimeWindowConfig | 
   }
 
   const start = raw.start;
-  if (typeof start !== 'string' || !HHMM.test(start)) {
-    errors.push('timeWindow.start: must match HH:MM');
-  }
+  validateClockValue('start', start, errors);
 
   const end = raw.end;
-  if (typeof end !== 'string' || !HHMM.test(end)) {
-    errors.push('timeWindow.end: must match HH:MM');
-  }
+  validateClockValue('end', end, errors);
 
   const excludeDates = raw.excludeDates;
   if (
@@ -192,8 +219,16 @@ export function validateConfig(raw: unknown): ConfigResult {
   }
 
   const selfAddress = raw.selfAddress;
-  if (typeof selfAddress !== 'string' || selfAddress.length === 0) {
+  if (typeof selfAddress !== 'string' || selfAddress.trim().length === 0) {
+    // Whitespace-only counts as empty — it is no address at all, and "must
+    // contain @" would be a misleading complaint about it.
     errors.push('selfAddress: must be a non-empty string');
+  } else if (selfAddress !== selfAddress.trim()) {
+    // Padded values are REJECTED rather than silently trimmed: the on-disk
+    // config must stay byte-for-byte what the identity gate
+    // (`domain/identity.ts`) will compare mail addresses against, so no
+    // stored-vs-validated divergence can ever exist.
+    errors.push('selfAddress: must not have leading or trailing whitespace');
   } else if (!selfAddress.includes('@')) {
     errors.push('selfAddress: must contain "@"');
   }

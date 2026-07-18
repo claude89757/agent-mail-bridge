@@ -138,12 +138,43 @@ describe('validateConfig (D-P5S-2)', () => {
     }
   });
 
+  it('rejects a whitespace-only selfAddress as empty, naming the field path', () => {
+    const result = validateConfig(validRaw({ selfAddress: '   ' }));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Classified as EMPTY (whitespace-only is no address at all), not as
+      // a missing "@" — the friendlier of the two messages.
+      expect(result.errors.some((e) => e === 'selfAddress: must be a non-empty string')).toBe(
+        true,
+      );
+    }
+  });
+
+  it('rejects a selfAddress with surrounding whitespace instead of silently trimming it', () => {
+    const result = validateConfig(validRaw({ selfAddress: '  @  ' }));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.startsWith('selfAddress:'))).toBe(true);
+    }
+  });
+
   it('rejects an unknown top-level field instead of silently ignoring it (fail closed)', () => {
     const result = validateConfig(validRaw({ notAKnownField: 'oops' }));
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.errors.some((e) => e.includes('notAKnownField'))).toBe(true);
+    }
+  });
+
+  it('rejects an empty credentialsEnvFile, naming the field path', () => {
+    const result = validateConfig(validRaw({ credentialsEnvFile: '' }));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.startsWith('credentialsEnvFile:'))).toBe(true);
     }
   });
 
@@ -163,6 +194,15 @@ describe('validateConfig (D-P5S-2)', () => {
     if (result.ok) {
       // Not expanded here — expansion is loadConfig's job (see below).
       expect(result.config.credentialsEnvFile).toBe('~/.secrets/amb-test.env');
+    }
+  });
+
+  it('rejects an empty dbPath, naming the field path', () => {
+    const result = validateConfig(validRaw({ dbPath: '' }));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.startsWith('dbPath:'))).toBe(true);
     }
   });
 
@@ -192,6 +232,64 @@ describe('validateConfig (D-P5S-2)', () => {
     if (!result.ok) {
       expect(result.errors.some((e) => e.startsWith('timeWindow.start:'))).toBe(true);
     }
+  });
+
+  it('rejects an out-of-range timeWindow.start hour ("25:00" passes the shape regex), naming the field path and the value', () => {
+    const result = validateConfig(
+      validRaw({
+        timeWindow: {
+          timezone: 'Asia/Shanghai',
+          days: [1, 2, 3],
+          start: '25:00',
+          end: '18:00',
+          excludeDates: [],
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(
+        result.errors.some((e) => e.startsWith('timeWindow.start:') && e.includes('25:00')),
+      ).toBe(true);
+    }
+  });
+
+  it('rejects an out-of-range timeWindow.end minute ("12:60"), naming the field path and the value', () => {
+    const result = validateConfig(
+      validRaw({
+        timeWindow: {
+          timezone: 'Asia/Shanghai',
+          days: [1, 2, 3],
+          start: '09:00',
+          end: '12:60',
+          excludeDates: [],
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(
+        result.errors.some((e) => e.startsWith('timeWindow.end:') && e.includes('12:60')),
+      ).toBe(true);
+    }
+  });
+
+  it('accepts the boundary clock values start "00:00" and end "23:59"', () => {
+    const result = validateConfig(
+      validRaw({
+        timeWindow: {
+          timezone: 'Asia/Shanghai',
+          days: [1, 2, 3],
+          start: '00:00',
+          end: '23:59',
+          excludeDates: [],
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
   });
 
   it('rejects a malformed timeWindow (days not an array), naming the nested field path', () => {
