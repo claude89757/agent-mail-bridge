@@ -243,9 +243,9 @@ describe('ingest pipeline integration (Phase 2 Task 9)', () => {
       const results = toIngest.map((mail) => harness.ingest(mail, NOW));
 
       const echoCount = results.filter((result) => result.outcome === 'echo').length;
-      expect(echoCount).toBe(20);
+      expect(echoCount).toBe(REPLY_COUNT);
       expect(harness.intentStore.countAll()).toBe(0);
-      expect(countCommandsByStatus(harness.db, 'SYSTEM_ECHO')).toBe(20);
+      expect(countCommandsByStatus(harness.db, 'SYSTEM_ECHO')).toBe(REPLY_COUNT);
     });
   });
 

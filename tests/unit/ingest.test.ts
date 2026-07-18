@@ -123,6 +123,7 @@ describe('createIngest / ingestMail (D-P2-8)', () => {
     expect(second.outcome).toBe('duplicate');
     expect(second.commandId).toBe(first.commandId);
     expect(second.intentId).toBe(first.intentId);
+    expect(second.reason).toBeNull();
     expect(deps.intentStore.countAll()).toBe(1);
   });
 
@@ -242,6 +243,8 @@ describe('createIngest / ingestMail (D-P2-8)', () => {
 
     expect(second.outcome).toBe('duplicate');
     expect(second.commandId).toBe(first.commandId);
+    expect(second.intentId).toBeNull();
+    expect(second.reason).toBeNull();
   });
 
   describe('C1 identity gate (D-P2-5): reason forwarded verbatim from checkIdentityC1', () => {
@@ -349,6 +352,7 @@ describe('createIngest / ingestMail (D-P2-8)', () => {
 
       expect(result.outcome).toBe('queued-window');
       expect(result.intentId).toBeNull();
+      expect(result.reason).toBe('outside-hours');
       expect(deps.commandStore.getByMessageId('msg-1@example.com')?.status).toBe(
         'QUEUED_WINDOW',
       );

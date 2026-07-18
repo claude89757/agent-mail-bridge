@@ -263,7 +263,19 @@ export function createIngest(deps: IngestDeps): (mail: IncomingMail, now: Date) 
       }
 
       const intentId = intentIdFactory(normalizedId);
-      intentStore.createForCommand(intentId, commandId, config.dryRun, nowIso);
+      const { created } = intentStore.createForCommand(intentId, commandId, config.dryRun, nowIso);
+      if (!created) {
+        // Fail closed (Task 8 review follow-up): a truncated-SHA collision
+        // between two DIFFERENT Message-IDs deriving the SAME intent id
+        // would otherwise silently report `ready` with a phantom intent
+        // still belonging to the earlier mail. Unreachable in practice with
+        // the real `deriveIntentId` (16 hex chars of SHA-256); pinned via
+        // the intentIdFactory seam in tests/integration/crash-recovery.test.ts.
+        throw new Error(
+          `createIngest: intentStore.createForCommand did not create a row for commandId ` +
+            `${commandId} (intent id "${intentId}" already exists) — intent-id collision (unexpected)`,
+        );
+      }
       commandStore.updateStatus(commandId, 'READY_FOR_DISPATCH', null, nowIso);
 
       return { outcome: 'ready', commandId, intentId, reason: null };

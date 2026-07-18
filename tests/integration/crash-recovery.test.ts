@@ -247,4 +247,26 @@ describe('crash recovery at ingestMail transaction boundaries (Phase 2 Task 10)'
     });
   });
 
+  describe('(bonus) intent-id collision guard (Part 2 review follow-up #3)', () => {
+    it('a second, different mail whose intentIdFactory derives the SAME intent id as an already-ready mail fails closed inside the transaction, rolling back only its own writes', () => {
+      const deps = setup();
+      const constantFactory = (): string => 'di-constant-collision';
+      const ingest = createIngest({ ...deps, intentIdFactory: constantFactory });
+
+      const first = ingest(mail({ messageId: '<collide-1@example.com>' }), NOW);
+      expect(first.outcome).toBe('ready');
+      expect(first.intentId).toBe('di-constant-collision');
+
+      expect(() => ingest(mail({ messageId: '<collide-2@example.com>' }), NOW_LATER)).toThrow(
+        /collision/,
+      );
+
+      // The guard throws INSIDE the transaction, so the second mail's own
+      // command insert (and watermark advance) is rolled back along with
+      // it — only the first mail's command/intent exist afterward.
+      expect(countRows(deps.db, 'commands')).toBe(1);
+      expect(countRows(deps.db, 'dispatch_intents')).toBe(1);
+      expect(deps.commandStore.getByMessageId('collide-2@example.com')).toBeNull();
+    });
+  });
 });
