@@ -23,6 +23,14 @@
  * scanning a real git repository sitting directly under an allowlisted
  * root.
  *
+ * Trust boundary corollary (review note): the CONTENTS of a configured
+ * root are trusted exactly as far as the root itself — whoever can write
+ * into it (e.g. a shared or world-writable directory) can plant
+ * plausibly-named symlinks/repos and thereby shape this index. Point
+ * `roots` only at directories the operator alone controls; threat-model
+ * assumption #3 (trusted local machine) does not stretch to multi-writer
+ * roots.
+ *
  * Shape follows `worktreeManager.ts`'s io-injection precedent: `ProjectScanIo`
  * is the minimal seam (`realpath` / `listDirectories` / `isGitRepo`) unit
  * tests script; `buildDefaultProjectScanIo` at the bottom is the ONLY place

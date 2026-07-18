@@ -119,7 +119,14 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   the target path is rejected by the `exists()` gate
   (mutation-verified — git alone would check out through it), the dangling
   variant by git's own refusal. The "mail cannot name arbitrary paths" half
-  is the Phase 3/4 router's allowlist scope, not yet started.
+  now has its enforcement point: the project allowlist/index
+  (`src/application/projectIndex.ts`, 36 tests) is built once from
+  operator-configured roots/aliases, offers exact name/alias lookup only
+  (path-flavored terms return nothing, no fuzzy matching a crafted body
+  could probe), reports-and-excludes symlinked children escaping their
+  root, and is the sole source of paths handed to the worktree manager —
+  which re-realpaths at execution time. Router wiring of the lookup is
+  Phase 4.
 - **C8 — Clarification binding.** Clarification replies must match token +
   thread + candidate-set version and TTL; late or stale replies are quarantined.
 - **C9 — Outbound hygiene.** Replies go to self only (CC/BCC/attachments
