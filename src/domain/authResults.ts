@@ -79,6 +79,13 @@ export interface ParsedAuthResults {
  * reinterpret the `(` as a literal character once no matching `)` is found)
  * needs lookahead this single forward pass intentionally avoids. A stray `)`
  * encountered at depth 0 is likewise dropped rather than emitted literally.
+ *
+ * NOTE for the Phase 3 `authservId`-filtering implementer: removing a
+ * comment splices its neighbors together (`header.d=exa(hidden)mple.com`
+ * parses as `example.com`). This only matters for an attacker who already
+ * controls the raw header bytes — exactly the authservId-trust gap the
+ * module doc comment defers to Phase 3 proper; such an attacker could write
+ * `header.d=example.com` directly anyway, so splicing adds no new power.
  */
 function stripComments(input: string): string {
   let out = '';
@@ -256,6 +263,12 @@ export type DkimFactorReason = 'NO_AUTH_RESULTS' | 'NO_DKIM_PASS' | 'DOMAIN_MISM
  * model §5 C2). If P0-3 measurement later shows the real self-to-self path
  * needs looser alignment, that is a deliberate, evidenced relaxation via
  * ADR, not a default here.
+ *
+ * Comparison is byte-wise after lowercasing; as in `identity.ts` (C1) there
+ * is deliberately NO Unicode/NFC normalization or locale-sensitive folding —
+ * homograph or NFC-variant domains (fullwidth chars, Turkish dotted `İ`,
+ * combining marks) simply never compare equal to an ASCII `selfDomain` and
+ * are rejected (fail closed).
  *
  * `parsed` may contain multiple entries — forwarding chains can carry more
  * than one `Authentication-Results` header (see

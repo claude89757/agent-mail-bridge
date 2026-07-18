@@ -49,6 +49,14 @@ describe('parseAuthenticationResults (D-P3P-1, control C2)', () => {
     expect(result.dkim).toEqual([{ result: 'pass', domain: 'example.com' }]);
   });
 
+  it('treats an empty header.d= value as absent and falls back to header.i', () => {
+    const raw = 'mx.example.com; dkim=pass header.d= header.i=@example.com';
+
+    const result = parseAuthenticationResults(raw);
+
+    expect(result.dkim).toEqual([{ result: 'pass', domain: 'example.com' }]);
+  });
+
   it('extracts only dkim resinfos from a multi-method header (spf + dkim + dmarc)', () => {
     const raw =
       'mx.example.com; ' +
