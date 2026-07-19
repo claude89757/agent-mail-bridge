@@ -98,25 +98,25 @@ export interface ImapReadTransportSendDeps {
 **Files:** Modify `src/transports/imapRead.ts`、`package.json`（依赖转正）;
 Test 并入 `tests/unit/imap-read-transport.test.ts`。
 
-- [ ] 失败测试先行（D-P3B5-2 全五条 + 顺序事件日志 + 键集合全等 + receipt
+- [x] 失败测试先行（D-P3B5-2 全五条 + 顺序事件日志 + 键集合全等 + receipt
   一致性 + not-implemented 现状保持）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 2: 活体发送验证测试文件
 
 **Files:** Create `tests/live/smtp-send-live.test.ts`（复用 `tests/helpers/liveCreds.ts`）。
 
-- [ ] 双闸门 + 泄漏纪律照批次二；写完后主会话亲自执行
+- [x] 双闸门 + 泄漏纪律照批次二；写完后主会话亲自执行
   `AMB_LIVE_TEST=1 AMB_LIVE_SEND=1 pnpm vitest run tests/live/smtp-send-live.test.ts`
   取证（1 封，A 类）。
-- [ ] GREEN（活体 1/1）→ commit。
+- [x] GREEN（活体 1/1）→ commit。
 
 ### Task 3: 批次收尾
 
-- [ ] 四件套全绿；threat-model C3/C9 补 live 证据半句；architecture 表
+- [x] 四件套全绿；threat-model C3/C9 补 live 证据半句；architecture 表
   send 行翻 done；本计划完成记录（含移交说明：outbox 泵与 UNCERTAIN 对账归
   daemon、脱敏归 C9 批次、selfAddress config 接线归 daemon）；
-- [ ] commit + push。
+- [x] commit + push。
 
 ---
 
@@ -130,3 +130,49 @@ Test 并入 `tests/unit/imap-read-transport.test.ts`。
 - 红线：活体测试双闸门 + 主会话执行；无新发信类别（仍是已批 A 类）；
   依赖转正有先例。
 - 无占位符：每测试点具体。
+
+---
+
+## 完成记录（2026-07-19）
+
+三任务闭环。测试基线 27 文件 / 512 → **28 文件 / 522**（+9 单测 +1 live，
+518 通过 + 4 live 默认 skip）；四件套全绿。
+
+### Commit 轨迹
+
+| Commit | 内容 |
+| --- | --- |
+| `26f92b5` | 本计划落盘 |
+| `9ef72dc` | T1 send() 实现（+8 测试：顺序事件日志、双失败路径、C9 六键全等、headers 键集全等、逐字节透传含 CRLF、默认 randomUUID、空白 selfAddress 构造抛）+ nodemailer 转正 |
+| `b56b6e6` | T1 审查两 Minor 折入：deferred pending-register 测试钉死 **await 语义**（审查员穿透实验证明现套件已杀 Promise.all 与漏 await 两类实现，此测补杀对抗构造）；nodemailer 9.0.3 中和 CRLF 头注入 + 线上头名大小写规范化写进 buildDefaultSmtpSend doc |
+| `b680bb8` | T2 活体发送测试文件（双闸门；raw imapflow 基线豁免论证；泄漏纪律比字面更严——断言绝不整体打印 IncomingMail）+ 2 处既有注释真实性维护 |
+| 本提交 | T3 收尾：T2 审查 Minor 折入（uid 围栏注释归因改为 filterNewUids 回归保护）、threat-model C3/C9 证据、architecture 表、完成记录 |
+
+### 审查结论
+
+- **T1 ✅ 零必修**。审查员亮点：对顺序测试做了三类错误实现的穿透实验（Promise.all
+  /漏 await/顺序颠倒全被现套件抓获），残余缺口仅对抗性 microtask 探针——deferred
+  测试补铁；CRLF 四注入面在 nodemailer 9.0.3 源码级实验验证全部折叠为空格。
+  实现者五条计划外判断（trim-before-use 等）全部裁定合规。
+- **T2 ✅ 零必修**。收集期安全逐行核查（工厂体零 creds 解引用）；quirk 链路
+  （投递前搜 `uidNext:*` 反转返回旧信 → filterNewUids 严格大于滤掉）逐段对源码
+  核对成立；"断言绝不整体打印 IncomingMail" 获亮点评价。
+
+### 活体证据（主会话执行，2026-07-19）
+
+- 单设 `AMB_LIVE_TEST=1`：**1 skipped / 0ms / 零联网**——只读命令绝不发信的
+  承诺实证；
+- 双闸门真跑：**1/1 passed，12.05s**（含 ~10s 可见延迟，快于 ADR-0002 的
+  15–30s 区间）——生产代码路径真发 1 封（A 类），Message-ID 逐字节往返、
+  `x-amb-outbox-id` 首实例命中、INTERNALDATE 围栏成立，输出零泄漏。
+
+### 移交说明
+
+1. **outbox 泵与 UNCERTAIN 对账归 daemon 批次**：send() 在 register 后
+   SMTP 失败时原样上抛、行已落库——重试/对账策略在 daemon 定，transport
+   不管状态机。
+2. **脱敏与 size cap 归 C9 内容批次**：transport 逐字节透传
+   subjectRedacted/bodyRedacted；CRLF 中和依赖 nodemailer 头编码（换库必须
+   重验，doc 已档）。
+3. **selfAddress/凭据 config 接线归 daemon 批次**（本批次构造参数注入）。
+4. **identity gate 极性反转接线等 ADR-0003 用户裁决**（红线 6 停点不变）。

@@ -93,6 +93,14 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   mirrors the real order, `tests/helpers/fakeTransport.ts`); 20/20 reflected
   replies classified `echo`, zero intents
   (`tests/integration/ingest-pipeline.test.ts`, exact-equality assertion).
+  The REAL send path now enforces the same order — mint → `await
+  registerOutbox` → SMTP submit, register-failure ⇒ the mail is never
+  submitted, pending-register pinned with a deferred-promise test
+  (`src/transports/imapRead.ts` send, batch-5) — and both echo markers
+  round-tripped live through Gmail: 1 production-path self-send came back
+  with the minted `Message-ID` byte-identical and `x-amb-outbox-id` first
+  instance equal to the registered outbox id
+  (`tests/live/smtp-send-live.test.ts`, 1/1 in 12 s, 2026-07-19).
 - **C4 — Time fence.** `INTERNALDATE` ≥ persisted `readyAt` from first setup:
   a fresh install can never execute historical mail.
   *Evidence:* `BEFORE_READY` rejection + fail-closed `NO_READY_AT` when unset
@@ -157,6 +165,16 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
 - **C9 — Outbound hygiene.** Replies go to self only (CC/BCC/attachments
   mechanically impossible), size-capped, with secrets, absolute paths, and
   large diffs redacted.
+  *Evidence (partial):* the transport half is mechanical now —
+  `OutboundMail` has no recipient field at the seam, `send()` builds
+  `to === from === selfAddress` internally, and a sorted-exact-keys
+  assertion pins the submitted message to EXACTLY six fields so a future
+  cc/bcc/replyTo turns tests red before it can widen where mail goes
+  (`src/transports/imapRead.ts`, `tests/unit/imap-read-transport.test.ts`);
+  CRLF header injection is neutralized by nodemailer's header encoding
+  (review-verified at 9.0.3, documented at `buildDefaultSmtpSend`).
+  Size caps and content redaction remain the reply-composition batch's
+  scope.
 - **C10 — Credential hygiene.** App password in the OS keychain (macOS;
   Linux story tracked as an open question), never in git/logs/replies; public
   repo enforces secret scanning in CI from day one.

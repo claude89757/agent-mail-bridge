@@ -302,8 +302,11 @@ describe.skipIf(!liveEnabled || creds === null)('smtp send path (live, one self-
       // explicit assertion is the recorded proof.
       expect(found.messageId).toBe(receipt.messageId);
 
-      // uid fence sanity: the live server honored the `sinceUid + 1:*`
-      // range — the found mail really is from AFTER the baseline probe.
+      // uid fence sanity: `filterNewUids` guarantees uid > sinceUid on the
+      // client side regardless of what the server answered, so what this
+      // really pins is that the transport's own off-by-one filtering does
+      // not regress (review finding, batch-5 T2: the server cannot fail
+      // this assertion — the transport can).
       expect(found.uid).toBeGreaterThanOrEqual(baselineUidNext);
 
       // INTERNALDATE lower bound (lexicographic — valid because both sides
