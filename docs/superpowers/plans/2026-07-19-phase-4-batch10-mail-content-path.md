@@ -123,13 +123,13 @@ export function extractCommand(input: {
 `tests/live/imap-live.test.ts`（并入 1 只读例）、`package.json`（mailparser）;
 其余既有夹具机械跟进。
 
-- [ ] 失败测试先行 → RED → 实现 → GREEN → commit。
+- [x] 失败测试先行 → RED → 实现 → GREEN → commit。
 
 ### Task 2: 抽取纯函数
 
 **Files:** Create `src/domain/mailContent.ts`; Test `tests/unit/mail-content.test.ts`。
 
-- [ ] 失败测试先行 → RED → 实现 → GREEN → commit。
+- [x] 失败测试先行 → RED → 实现 → GREEN → commit。
 
 ### Task 3: store 查询面
 
@@ -137,15 +137,76 @@ export function extractCommand(input: {
 `src/store/outboxStore.ts`、`src/store/clarificationStore.ts`; Test 并入
 既有 store 测试文件。
 
-- [ ] 失败测试先行 → RED → 实现 → GREEN → commit。
+- [x] 失败测试先行 → RED → 实现 → GREEN → commit。
 
 ### Task 4: 批次收尾
 
-- [ ] 四件套全绿；live 只读证据；architecture 表行；threat-model 无新
+- [x] 四件套全绿；live 只读证据；architecture 表行；threat-model 无新
   控制面（正文进入管线的 scrub 义务已由批次九漏斗承接，C9 补一句
   bodyText 是新泄漏源头且已有漏斗）；完成记录（移交：daemon ticks 接
   extractCommand + 查询面、格式最小论真机后可调、mailparser 供应链注记）；
-- [ ] commit + push。
+- [x] commit + push。
+
+---
+
+## 完成记录（2026-07-19）
+
+四任务闭环。测试基线 32 文件 / 649 → **33 文件 / 688**（+39：T1 传输 6 +
+live 1、T2 抽取 25、T3 查询面 7；683 通过 + 5 live 默认 skip；收尾的
+commandId 多样性断言与 TTL 指回并入既有用例，不增计数）；四件套全绿；
+零发信。
+
+### Commit 轨迹
+
+| Commit | 内容 |
+| --- | --- |
+| `a60adef` | 本计划落盘 |
+| `17c4767` | T1 bodyText + ParseMime 注入面（mailparser@3.9.14 唯一 import 点；单封解析失败 fail open） |
+| `fe81c76` | T2 extractCommand（命令格式最小论；threadKey 三级回退 root-or-nothing；规范化复用 `domain/mail.ts` `normalizeMessageId`） |
+| `127a07a` | T3 四查询面（IntentSummary+commandId、getById、findByStatus、findPendingExpiredBefore 共享 `<=` 边界） |
+| 本提交 | T4 收尾：审查两 Minor 处置 + threat-model C9 bodyText 注记 + architecture 行 + 完成记录 |
+
+### Live 只读证据
+
+`AMB_LIVE_TEST=1` 单文件实跑 4/4（新增真实邮箱正文解码非空一例）；全程
+仅 fetchSince；输出仅布尔/长度，零内容零地址（测试内注释禁止
+toMatch/toContain 于正文）。
+
+### 审查结论
+
+**✅ APPROVED，零 Critical/Important，2 Minor 本提交处置。** 审查复现 6 轮
+变异宣称 + 自加 fail-open catch 范围探针（把 catch 扩到整个 fetch 循环
+⇒ 既有 mapping-error 传播例红——fail open 仅限单封 parse，致命错误仍上
+抛）。规格偏差裁定成立：规范化器实际在 `domain/mail.ts`（identity.ts 从
+无此函数），**保大小写**是「与 ingest 同款」的唯一自洽解（lowercase 会
+静默拆线程，变异实证）；term 的 trim+lowercase 只落项目词（与
+projectIndex.lookup 对齐），两处规范化未混。实现者中途一次 git checkout
+事故的等价重建经审计确认无回退（基线 649 例零删测全绿）。
+
+### Minor 处置
+
+1. commit message「双向交叉引用」实为单向 → 本提交在 clarificationState
+   的 EXPIRED_AT_REPLY 注释补指回 `findPendingExpiredBefore` 共享边界；
+2. commandId 夹具单一化（常量-1 变异全绿存活）→ 本提交在多 command 用例
+   补 di-b/di-c 的 commandId 断言（commands 2/3，杀常量-1）。
+
+### 移交说明
+
+1. **daemon ticks（下批）拼图已齐**：`extractCommand`（headers 'subject'
+   首实例 + bodyText + normalized id + references 全实例 + in-reply-to
+   首实例）→ `dispatchIntent`；孤儿 PENDING 恢复用
+   `intentStore.findByStatus('PENDING')` → `commandStore.getById`（行上有
+   uid/uidValidity）→ 按 uid 重取邮件重抽取；UNCERTAIN 对账输入 =
+   `outboxStore.findByStatus`；EXPIRED 扫描输入 =
+   `findPendingExpiredBefore`（与回复拒绝共享 `<=` 边界）。
+2. **命令格式最小论**（主题首词=项目词、正文=任务文本、回复即继续）是
+   本批显式设计裁定：纯函数集中一处，真机使用后调整只动 mailContent.ts
+   与其测试。`fw:`（Outlook 缩写）刻意不在剥链集合（doc 明示 v0.1 只认
+   re:/fwd:）——真机走查若见 fw: 再扩。
+3. **mailparser 供应链**：3.9.14 lockfile 钉死；nodemailer 同作者生态；
+   全树唯一 import 点在 `buildDefaultParseMime`（LAYERING 注记）。
+4. **正文是新泄漏源**：prompt 流向 driver 不回显；折返回信的任何片段走
+   批次九漏斗（threat-model C9 已注记）。
 
 ---
 

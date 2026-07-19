@@ -306,6 +306,15 @@ describe('IntentStore (D-P2-10 / D-P3P-4)', () => {
       expect(store.findByStatus('RUNNING').map((intent) => intent.id)).toEqual(['di-b']);
       expect(store.findByStatus('COMPLETED').map((intent) => intent.id)).toEqual(['di-c']);
       expect(store.findByStatus('FAILED')).toEqual([]);
+      // commandId must track the actual row, not happen to be right: every
+      // other commandId assertion in this suite reads a fresh db's FIRST
+      // command (id 1), which a mutant hard-coding `commandId: 1` would
+      // satisfy — di-b/di-c sit on commands 2 and 3, killing that mutant
+      // (batch-10 review Minor 2).
+      expect(store.findByStatus('RUNNING').map((intent) => intent.commandId)).toEqual([commandB]);
+      expect(store.findByStatus('COMPLETED').map((intent) => intent.commandId)).toEqual([commandC]);
+      expect(commandB).not.toBe(1);
+      expect(commandC).not.toBe(1);
     });
 
     it('getById round-trips a stored intent and returns undefined for a missing one', () => {

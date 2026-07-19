@@ -173,7 +173,11 @@ export type ClarificationRejectReason =
   // Reply candidateSetVersion missing (null, extraction failed) or does not
   // match record.candidateSetVersion.
   | 'VERSION_STALE'
-  // now >= record.expiresAt, compared lexicographically.
+  // now >= record.expiresAt, compared lexicographically. The daemon's
+  // expiry sweep (`clarificationStore.findPendingExpiredBefore`,
+  // `expires_at <= ?`) deliberately shares this exact boundary — a record
+  // the sweep would expire is exactly one a reply arriving at the same
+  // instant would be rejected against, never a gap between the two.
   | 'EXPIRED_AT_REPLY';
 
 /**

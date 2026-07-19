@@ -237,8 +237,14 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   syntax detection), and path masking is literal and case-sensitive — a
   deliberately case-mangled path would survive, accepted because event
   paths originate from the bridge's own byte-identical cwd argument and
-  the mail's only recipient is the operator themselves. Send wiring
-  (outcome → compose → transport) is the daemon batch's.
+  the mail's only recipient is the operator themselves. Note one NEW
+  inbound content source since batch 10: `IncomingMail.bodyText` (decoded
+  mail bodies now flow through the pipeline as the task prompt). Prompts
+  are consumed by the driver, not echoed into replies; anything of them
+  that resurfaces in agent event text exits through the same composition
+  funnel above, and live tests never print body content (boolean/length
+  assertions only). Send wiring (outcome → compose → transport) is the
+  daemon batch's.
 - **C10 — Credential hygiene.** App password in the OS keychain (macOS;
   Linux story tracked as an open question), never in git/logs/replies; public
   repo enforces secret scanning in CI from day one.
