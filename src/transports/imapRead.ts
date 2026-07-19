@@ -9,9 +9,12 @@
  *
  * LAYERING (D-P3B2-5): this file, inside `src/transports/**`, is the ONLY
  * place in the source tree allowed to import `imapflow` — and, since the
- * batch-5 send half, `nodemailer`. `domain/`, `application/`, and `store/`
- * never see either, directly or transitively — they only ever see the
- * `MailTransport` seam.
+ * batch-5 send half, `nodemailer`, and, since the batch-10 body path,
+ * `mailparser` (`buildDefaultParseMime` below is the single import point;
+ * supply-chain note: mailparser is the same author ecosystem as nodemailer,
+ * batch-5 precedent, version pinned via the pnpm lockfile). `domain/`,
+ * `application/`, and `store/` never see any of them, directly or
+ * transitively — they only ever see the `MailTransport` seam.
  *
  * `send` (D-P3B5-1/2): real SMTP submission via the optional send deps
  * (`ImapReadTransportSendDeps` below; production wiring is
@@ -24,6 +27,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { ImapFlow } from 'imapflow';
+import { simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
 
 import { filterNewUids } from '../domain/uid.js';
@@ -68,11 +72,11 @@ export interface ImapEnvelopeLike {
 /**
  * Minimal projection of imapflow's `FetchMessageObject`, scoped to exactly
  * the query this module issues (`{ envelope: true, internalDate: true,
- * headers: true }` — see `fetchOne` below). Deliberately excludes `uid`
- * (present on the real type): `fetchSince` already knows the uid it asked
- * for from its own search-result loop and uses that value directly rather
- * than trusting an echoed-back field, so this projection never needs to
- * carry one.
+ * headers: true, source: true }` — see `fetchOne` below). Deliberately
+ * excludes `uid` (present on the real type): `fetchSince` already knows the
+ * uid it asked for from its own search-result loop and uses that value
+ * directly rather than trusting an echoed-back field, so this projection
+ * never needs to carry one.
  */
 export interface FetchedMessage {
   envelope?: ImapEnvelopeLike;
@@ -85,6 +89,11 @@ export interface FetchedMessage {
   /** Raw header block for the whole message (imapflow's `BODY[HEADER]`
    *  fetch response), unparsed. */
   headers?: Buffer;
+  /** Full raw message source (imapflow's `BODY[]` fetch response when the
+   *  query passes `source: true`), unparsed — the ParseMime seam's input
+   *  (D-P4B10-1). Absent when the server never produced one; that maps to
+   *  `bodyText: null` (see `resolveBodyText` below). */
+  source?: Buffer;
 }
 
 export interface ImapClientFactory {
@@ -114,7 +123,7 @@ export interface ImapClientLike {
   search(query: { uid: string }, opts: { uid: true }): Promise<number[] | false>;
   fetchOne(
     uid: string | number,
-    query: { envelope: true; internalDate: true; headers: true },
+    query: { envelope: true; internalDate: true; headers: true; source: true },
     opts: { uid: true },
   ): Promise<FetchedMessage | false>;
   messageFlagsAdd(uid: string | number, flags: string[], opts: { uid: true }): Promise<boolean>;
@@ -231,6 +240,77 @@ export function parseHeaderBlock(
   }
 
   return headers;
+}
+
+/* ------------------------------------------------------------------ */
+/* MIME parsing seam (D-P4B10-1)                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The MIME-parsing injection seam (D-P4B10-1), same shape family as
+ * `SmtpSend` above and the codex driver's `SpawnCodex`: production is
+ * `buildDefaultParseMime`'s mailparser wrapper, tests inject scripted
+ * fakes. Takes the full raw message source and yields the decoded
+ * plain-text body — `text: null` when the message simply has no text part.
+ * A REJECTION from this function is tolerated by the caller
+ * (`resolveBodyText` maps it to `bodyText: null`, fail open), so a fake
+ * that throws is a legitimate test fixture, not a contract violation.
+ */
+export type ParseMime = (source: Uint8Array) => Promise<{ text: string | null }>;
+
+/**
+ * Production `ParseMime` (D-P4B10-1): wraps mailparser's `simpleParser`,
+ * the SINGLE mailparser import point in the source tree (module doc
+ * comment's layering note). `parsed.text` is mailparser's default body
+ * resolution — the text/plain part when one exists, else its html-to-text
+ * rendering — which is exactly the plan-locked "text/plain preferred"
+ * semantics; a message with no text part at all leaves `parsed.text`
+ * undefined, mapped here to `null`. An empty-string body stays `''`
+ * (verbatim): "empty body" and "no body" are different facts, and the
+ * downstream consumer (`extractCommand`'s prompt fallback) treats both as
+ * absent anyway via its own trim.
+ */
+export function buildDefaultParseMime(): ParseMime {
+  return async (source: Uint8Array): Promise<{ text: string | null }> => {
+    const parsed = await simpleParser(Buffer.isBuffer(source) ? source : Buffer.from(source));
+    return { text: typeof parsed.text === 'string' ? parsed.text : null };
+  };
+}
+
+/**
+ * Resolves one fetched message's `bodyText`, FAIL OPEN to `null` on every
+ * failure mode (D-P4B10-1): a missing `source` (the fetch never produced
+ * one) and a `parseMime` rejection alike yield `bodyText: null` for THAT
+ * mail while the rest of the fetch batch proceeds untouched.
+ *
+ * DELIBERATE ASYMMETRY with `resolveInternalDate`'s fail-CLOSED skip
+ * (below): `internalDate` is what the C4 readyAt security fence compares
+ * against, so a message without it cannot be fenced at all and must be
+ * dropped. The body carries no security decision — it is enhancement
+ * information (the eventual command prompt), while headers/uid are the
+ * pipeline's skeleton — and a mail whose body cannot be read still must
+ * flow through the echo/identity/window gates and be recorded, so "no
+ * body" is representable (`null`) instead of fatal, and one broken MIME
+ * tree cannot poison the whole batch.
+ *
+ * `Buffer.isBuffer`, not `!== undefined`: same runtime-shape guard as
+ * `parseHeaderBlock` above — imapflow's internal getBuffer helper can
+ * structurally return `false` for a NIL token, which the published types
+ * don't admit.
+ */
+async function resolveBodyText(
+  source: Buffer | undefined,
+  parseMime: ParseMime,
+): Promise<string | null> {
+  if (!Buffer.isBuffer(source)) {
+    return null;
+  }
+  try {
+    const { text } = await parseMime(source);
+    return text;
+  } catch {
+    return null;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -359,6 +439,7 @@ function mapFetchedMessage(
   uid: number,
   mailbox: string,
   uidValidity: string,
+  bodyText: string | null,
 ): IncomingMail | null {
   const internalDate = resolveInternalDate(fetched.internalDate);
   if (internalDate === null) {
@@ -375,6 +456,7 @@ function mapFetchedMessage(
     from: addressesToAddrSpecs(envelope?.from),
     to: addressesToAddrSpecs(envelope?.to),
     cc: addressesToAddrSpecs(envelope?.cc),
+    bodyText,
     internalDate,
     uid,
     uidValidity,
@@ -486,11 +568,15 @@ export function createImapReadTransport(opts: {
   /** Optional send half (D-P3B5-1). Omitted → read-only transport whose
    *  `send` fails loud (see `send` below). */
   send?: ImapReadTransportSendDeps;
+  /** MIME parsing seam (D-P4B10-1). Omitted → `buildDefaultParseMime()`
+   *  (the production mailparser wrapper); tests inject scripted fakes. */
+  parseMime?: ParseMime;
 }): MailTransport {
   const { factory } = opts;
   // Validated at CONSTRUCTION, not first send: a blank selfAddress is a
   // wiring bug and must surface before any mail could be involved.
   const sendDeps = opts.send === undefined ? undefined : resolveSendDeps(opts.send);
+  const parseMime = opts.parseMime ?? buildDefaultParseMime();
 
   return {
     async fetchSince(
@@ -534,13 +620,17 @@ export function createImapReadTransport(opts: {
           // simply won't see this uid either (it's gone).
           const fetched = await client.fetchOne(
             uid,
-            { envelope: true, internalDate: true, headers: true },
+            { envelope: true, internalDate: true, headers: true, source: true },
             { uid: true },
           );
           if (fetched === false) {
             continue;
           }
-          const mapped = mapFetchedMessage(fetched, uid, mailbox, uidValidity);
+          // D-P4B10-1: the body path fails OPEN per message — see
+          // `resolveBodyText` — unlike the fail-closed date skip inside
+          // `mapFetchedMessage`.
+          const bodyText = await resolveBodyText(fetched.source, parseMime);
+          const mapped = mapFetchedMessage(fetched, uid, mailbox, uidValidity, bodyText);
           if (mapped !== null) {
             mails.push(mapped);
           }

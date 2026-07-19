@@ -57,7 +57,7 @@
  * one discovery probe below are each an independent connect/logout, see
  * `src/transports/imapRead.ts`'s module doc comment; P0-1 measured ~2.5s per
  * connect against this same mailbox): 1 discovery connect (`beforeAll`) + 1
- * connect per test (3 tests) = 4 connects total, comfortably inside the
+ * connect per test (4 tests) = 5 connects total, comfortably inside the
  * generous per-hook/per-test timeout set below.
  */
 import { ImapFlow } from 'imapflow';
@@ -280,6 +280,45 @@ describe.skipIf(!liveEnabled || creds === null)('imap read path (live, read-only
           expect(mail.messageId.length).toBeGreaterThan(0);
         }
       }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  // Same test-order dependency as tests 2/3 (realUidValidity from test 1,
+  // uidNext from beforeAll) — see the TEST ORDER IS LOAD-BEARING note above.
+  it(
+    'test 4: bodyText on a small real slice is decoded — booleans/lengths only, NEVER the content (red line 2)',
+    async () => {
+      const sinceUid = Math.max(0, uidNext - 6);
+
+      const result = await transport.fetchSince(MAILBOX, realUidValidity, sinceUid);
+
+      // LEAK-AVOIDANCE (AGENTS.md red line 2, stricter here than anywhere
+      // else in this file): a real message body can embed real local paths,
+      // addresses, or task text. EVERY assertion below therefore compares
+      // only booleans and lengths — `expect(bool).toBe(true)` prints
+      // `true`/`false` on failure, never a fragment of the body itself. Do
+      // not "improve" any of these into toMatch/toContain on `bodyText`.
+      for (const mail of result) {
+        expect(mail.bodyText === null || typeof mail.bodyText === 'string').toBe(true);
+      }
+
+      // Unlike test 3, this test REQUIRES a non-empty slice: its whole
+      // purpose is live evidence that the source→parseMime path decodes a
+      // real message, and an empty slice would prove nothing. The dedicated
+      // test mailbox is append-only in practice (~15k messages, P0-1), so
+      // an empty recent slice is itself a signal worth failing on. The two
+      // asserts are split so a failure names which fact broke — still only
+      // ever printing true/false.
+      expect(result.length > 0).toBe(true);
+
+      // A recent slice decoding NOTHING would mean the source→parseMime
+      // path is broken (e.g. `source: true` never requested): the mailbox's
+      // recent probe mail (P0-1/batch-6) all carries real text bodies.
+      const decodedOne = result.some(
+        (mail) => typeof mail.bodyText === 'string' && mail.bodyText.length > 0,
+      );
+      expect(decodedOne).toBe(true);
     },
     TEST_TIMEOUT_MS,
   );

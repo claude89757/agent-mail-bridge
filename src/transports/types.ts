@@ -37,6 +37,19 @@ export interface IncomingMail {
   from: readonly string[];
   to: readonly string[];
   cc: readonly string[];
+  /**
+   * Decoded plain-text body (decision D-P4B10-1): the text/plain part when
+   * one exists, else mailparser's default html-to-text `text` behavior.
+   * Download or parse failure ⇒ `null` — fail OPEN to "no body", never a
+   * throw: the body is enhancement information (the eventual command
+   * prompt) while headers/uid are the pipeline's skeleton, so a mail whose
+   * body cannot be read still flows through the echo/identity/window gates,
+   * and one broken MIME tree must not poison the whole fetch batch. Direct
+   * shape change to this pre-1.0 internal seam (D-P3B2-1 precedent), not a
+   * parallel field or compatibility shim. Full fail-open-vs-fail-closed
+   * rationale: `resolveBodyText` in `src/transports/imapRead.ts`.
+   */
+  bodyText: string | null;
   /** ISO 8601 instant — the IMAP INTERNALDATE. */
   internalDate: string;
   uid: number;

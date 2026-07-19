@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildDefaultParseMime,
   createImapReadTransport,
   parseHeaderBlock,
 } from '../../src/transports/imapRead.js';
@@ -8,6 +9,7 @@ import type {
   FetchedMessage,
   ImapClientFactory,
   ImapClientLike,
+  ParseMime,
   SmtpMessage,
 } from '../../src/transports/imapRead.js';
 import { UidValidityChangedError } from '../../src/transports/errors.js';
@@ -136,6 +138,46 @@ function fetchedMessageFixture(overrides: Partial<FetchedMessage> = {}): Fetched
   };
 }
 
+/**
+ * A complete multipart/alternative RFC 5322 message (synthetic, placeholder
+ * addresses) for the bodyText path (D-P4B10-1): the text/plain part must win
+ * over the text/html part in `bodyText` (mailparser's default `text`
+ * behavior, wrapped by `buildDefaultParseMime`).
+ */
+const MULTIPART_SOURCE = Buffer.from(
+  'From: sender@example.com\r\n' +
+    'To: bridge-user@example.com\r\n' +
+    'Subject: Fixture\r\n' +
+    'MIME-Version: 1.0\r\n' +
+    'Content-Type: multipart/alternative; boundary="amb-fixture-boundary"\r\n' +
+    '\r\n' +
+    '--amb-fixture-boundary\r\n' +
+    'Content-Type: text/plain; charset=utf-8\r\n' +
+    '\r\n' +
+    'run tests in proj-a\r\n' +
+    '--amb-fixture-boundary\r\n' +
+    'Content-Type: text/html; charset=utf-8\r\n' +
+    '\r\n' +
+    '<p>run tests in proj-a (html)</p>\r\n' +
+    '--amb-fixture-boundary--\r\n',
+  'utf-8',
+);
+
+/** An attachment-only message with NO text part at all: mailparser yields no
+ *  `text`, so `buildDefaultParseMime` must report `text: null`. */
+const NO_TEXT_PART_SOURCE = Buffer.from(
+  'From: sender@example.com\r\n' +
+    'To: bridge-user@example.com\r\n' +
+    'Subject: Fixture\r\n' +
+    'MIME-Version: 1.0\r\n' +
+    'Content-Type: application/octet-stream\r\n' +
+    'Content-Disposition: attachment; filename="fixture.bin"\r\n' +
+    'Content-Transfer-Encoding: base64\r\n' +
+    '\r\n' +
+    'QUFBQQ==\r\n',
+  'utf-8',
+);
+
 function incomingMailFixture(overrides: Partial<IncomingMail> = {}): IncomingMail {
   return {
     messageId: '<processed@example.com>',
@@ -143,6 +185,7 @@ function incomingMailFixture(overrides: Partial<IncomingMail> = {}): IncomingMai
     from: [],
     to: [],
     cc: [],
+    bodyText: null,
     internalDate: '2026-07-18T00:00:00.000Z',
     uid: 1,
     uidValidity: UIDVALIDITY,
@@ -245,6 +288,7 @@ describe('createImapReadTransport (D-P3B2-2/3)', () => {
           from: ['other@example.net'],
           to: ['bridge-user@example.com'],
           cc: ['cc@example.net'],
+          bodyText: null,
           internalDate: '2026-07-18T09:00:00.000Z',
           uid: 5,
           uidValidity: UIDVALIDITY,
@@ -265,6 +309,7 @@ describe('createImapReadTransport (D-P3B2-2/3)', () => {
           from: ['sender@example.com'],
           to: ['bridge-user@example.com'],
           cc: [],
+          bodyText: null,
           internalDate: '2026-07-18T10:00:00.000Z',
           uid: 10,
           uidValidity: UIDVALIDITY,
@@ -531,6 +576,112 @@ describe('createImapReadTransport (D-P3B2-2/3)', () => {
       const result = await transport.fetchSince(MAILBOX, UIDVALIDITY, 0);
 
       expect(result[0]?.messageId).toBeNull();
+    });
+
+    // D-P4B10-1: the body-text path. fetchSince now also pulls each
+    // message's full source and threads it through the ParseMime seam;
+    // parse/download failures fail OPEN to bodyText null (the body is
+    // enhancement info — headers/uid are the pipeline's skeleton) instead of
+    // poisoning the whole fetch batch.
+    describe('bodyText (D-P4B10-1)', () => {
+      it('threads each fetched source through the injected parseMime (exact bytes in, its text out)', async () => {
+        const log: LoggedCall[] = [];
+        const seenSources: string[] = [];
+        const parseMime: ParseMime = (source) => {
+          seenSources.push(Buffer.from(source).toString('utf-8'));
+          return Promise.resolve({ text: `decoded:${String(seenSources.length)}` });
+        };
+        const factory = createScriptedFactory(log, {
+          mailbox: { uidValidity: UIDVALIDITY_BIGINT, uidNext: 3 },
+          search: [1, 2],
+          fetch: new Map([
+            [1, fetchedMessageFixture({ source: Buffer.from('raw-mail-one', 'utf-8') })],
+            [2, fetchedMessageFixture({ source: Buffer.from('raw-mail-two', 'utf-8') })],
+          ]),
+        });
+        const transport = createImapReadTransport({ factory, parseMime });
+
+        const result = await transport.fetchSince(MAILBOX, UIDVALIDITY, 0);
+
+        expect(seenSources).toEqual(['raw-mail-one', 'raw-mail-two']);
+        expect(result.map((mail) => mail.bodyText)).toEqual(['decoded:1', 'decoded:2']);
+      });
+
+      it('defaults parseMime to the mailparser wrapper: a multipart source yields the text/plain part, not the html one', async () => {
+        const log: LoggedCall[] = [];
+        const factory = createScriptedFactory(log, {
+          mailbox: { uidValidity: UIDVALIDITY_BIGINT, uidNext: 2 },
+          search: [1],
+          fetch: new Map([[1, fetchedMessageFixture({ source: MULTIPART_SOURCE })]]),
+        });
+        const transport = createImapReadTransport({ factory });
+
+        const result = await transport.fetchSince(MAILBOX, UIDVALIDITY, 0);
+
+        const bodyText = result[0]?.bodyText;
+        expect(typeof bodyText).toBe('string');
+        expect(bodyText).toContain('run tests in proj-a');
+        expect(bodyText).not.toContain('<p>');
+      });
+
+      it('fails OPEN on a single parseMime throw: that mail gets bodyText null, its sibling still parses', async () => {
+        const log: LoggedCall[] = [];
+        const parseMime: ParseMime = (source) => {
+          if (Buffer.from(source).toString('utf-8') === 'poisoned') {
+            return Promise.reject(new Error('parse exploded'));
+          }
+          return Promise.resolve({ text: 'survived' });
+        };
+        const factory = createScriptedFactory(log, {
+          mailbox: { uidValidity: UIDVALIDITY_BIGINT, uidNext: 3 },
+          search: [1, 2],
+          fetch: new Map([
+            [1, fetchedMessageFixture({ source: Buffer.from('poisoned', 'utf-8') })],
+            [2, fetchedMessageFixture({ source: Buffer.from('healthy', 'utf-8') })],
+          ]),
+        });
+        const transport = createImapReadTransport({ factory, parseMime });
+
+        const result = await transport.fetchSince(MAILBOX, UIDVALIDITY, 0);
+
+        expect(result.map((mail) => [mail.uid, mail.bodyText])).toEqual([
+          [1, null],
+          [2, 'survived'],
+        ]);
+      });
+
+      it('maps a message whose source never arrived (download failure) to bodyText null without invoking parseMime', async () => {
+        const log: LoggedCall[] = [];
+        let parseMimeCalls = 0;
+        const parseMime: ParseMime = () => {
+          parseMimeCalls += 1;
+          return Promise.resolve({ text: 'should never be used' });
+        };
+        // `source` deliberately omitted (not undefined-assigned), matching
+        // the missing-internalDate fixture's exactOptionalPropertyTypes
+        // discipline above.
+        const sourceless: FetchedMessage = {
+          envelope: {
+            messageId: '<no-source@example.com>',
+            from: [{ address: 'sender@example.com' }],
+            to: [{ address: 'bridge-user@example.com' }],
+            cc: [],
+          },
+          internalDate: new Date('2026-07-18T00:00:00.000Z'),
+          headers: Buffer.from('Subject: No Source\r\n', 'utf-8'),
+        };
+        const factory = createScriptedFactory(log, {
+          mailbox: { uidValidity: UIDVALIDITY_BIGINT, uidNext: 2 },
+          search: [1],
+          fetch: new Map([[1, sourceless]]),
+        });
+        const transport = createImapReadTransport({ factory, parseMime });
+
+        const result = await transport.fetchSince(MAILBOX, UIDVALIDITY, 0);
+
+        expect(result.map((mail) => mail.bodyText)).toEqual([null]);
+        expect(parseMimeCalls).toBe(0);
+      });
     });
 
     it('connects once per fetchSince call (no pooling, v0.1 connection policy): two calls issue two connects', async () => {
@@ -833,5 +984,25 @@ describe('parseHeaderBlock (header parser, exported for direct unit testing)', (
     const result = parseHeaderBlock(Buffer.from('X:   three leading spaces\r\n', 'utf-8'));
 
     expect(result.get('x')).toEqual(['  three leading spaces']);
+  });
+});
+
+describe('buildDefaultParseMime (D-P4B10-1 mailparser wrapper)', () => {
+  it('extracts the text/plain part from a multipart/alternative source', async () => {
+    const parseMime = buildDefaultParseMime();
+
+    const { text } = await parseMime(MULTIPART_SOURCE);
+
+    expect(typeof text).toBe('string');
+    expect(text).toContain('run tests in proj-a');
+    expect(text).not.toContain('<p>');
+  });
+
+  it('reports text: null for a message with no text part at all (attachment-only)', async () => {
+    const parseMime = buildDefaultParseMime();
+
+    const { text } = await parseMime(NO_TEXT_PART_SOURCE);
+
+    expect(text).toBeNull();
   });
 });

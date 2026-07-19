@@ -91,6 +91,7 @@ function buildMail(overrides: Partial<IncomingMail> & { uid: number }): Incoming
     from: [SELF],
     to: [SELF],
     cc: [],
+    bodyText: null,
     internalDate: AFTER_READY,
     uidValidity: FAKE_UID_VALIDITY,
     mailbox: FAKE_MAILBOX,

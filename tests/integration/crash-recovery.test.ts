@@ -95,6 +95,7 @@ function mail(overrides: Partial<IncomingMail> = {}): IncomingMail {
     from: [SELF],
     to: [SELF],
     cc: [],
+    bodyText: null,
     internalDate: '2026-07-17T00:00:01.000Z',
     uid: 1,
     uidValidity: '1690000000',

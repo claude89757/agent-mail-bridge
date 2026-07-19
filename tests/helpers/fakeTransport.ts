@@ -178,6 +178,10 @@ export class FakeMailTransport implements MailTransport {
       from: [],
       to: [],
       cc: [],
+      // Mechanically `null` (like from/to/cc staying empty): the reflected
+      // mail's sole purpose is driving the echo gate, which never reads the
+      // body.
+      bodyText: null,
       internalDate,
       uid: this.uidCounter,
       uidValidity: FAKE_UID_VALIDITY,
