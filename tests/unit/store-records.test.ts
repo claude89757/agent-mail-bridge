@@ -9,6 +9,8 @@ import type { CommandRecordInput } from '../../src/store/commandStore.js';
 import { IntentStore } from '../../src/store/intentStore.js';
 import { MetaStore } from '../../src/store/metaStore.js';
 import { OutboxStore } from '../../src/store/outboxStore.js';
+import { SessionStore } from '../../src/store/sessionStore.js';
+import type { SessionCreateInput } from '../../src/store/sessionStore.js';
 
 // Guards decision D-P2-10 (store API shapes) over the D-P2-9 schema: each
 // store is a thin synchronous wrapper, and `commandStore`/`outboxStore`
@@ -700,5 +702,144 @@ describe('ClarificationStore (D-P4B4-3)', () => {
     // the domain map and this store would persist it; the invariant lives in
     // create()'s supersede-then-insert transaction, not in an extra edge
     // restriction here.
+  });
+});
+
+// Guards decision D-P4B7-2 (thread↔session mapping persistence, Phase 4
+// batch 7 plan docs/superpowers/plans/2026-07-19-phase-4-batch7-router-core.md)
+// over the migration 004 schema: `recordDriverSessionId` enforces the
+// first-write invariant (a thread's driver session id is written once and
+// never silently replaced — resume reuses the SAME id per ADR-0004, so a
+// different id showing up is an anomaly, fail closed). agent_sessions has
+// deliberately NO foreign key to commands — a session spans many commands
+// over its thread's lifetime (see the migration 004 comment in
+// src/store/migrations.ts). Fixture discipline: placeholder thread keys,
+// synthetic /tmp/fixtures/ paths (never a real local path), low-entropy
+// synthetic UUID shapes for driver session ids.
+describe('SessionStore (D-P4B7-2)', () => {
+  const DRIVER_SESSION_ID = '00000000-0000-4000-8000-000000000001';
+  const OTHER_DRIVER_SESSION_ID = '00000000-0000-4000-8000-000000000002';
+
+  let db: Db;
+  let store: SessionStore;
+
+  beforeEach(() => {
+    db = openDatabase(':memory:');
+    store = new SessionStore(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function sessionInput(overrides: Partial<SessionCreateInput> = {}): SessionCreateInput {
+    return {
+      threadKey: 'thread-key-0001',
+      projectPath: '/tmp/fixtures/proj-a',
+      now: '2026-07-19T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('create then findByThreadKey round-trips the summary with a NULL driver_session_id (the session exists before thread.started)', () => {
+    const created = store.create(sessionInput());
+
+    expect(created).toEqual({
+      id: 1,
+      threadKey: 'thread-key-0001',
+      projectPath: '/tmp/fixtures/proj-a',
+      driverSessionId: null,
+      createdAt: '2026-07-19T00:00:00.000Z',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+    });
+    expect(store.findByThreadKey('thread-key-0001')).toEqual(created);
+    expect(store.findByThreadKey('no-such-thread')).toBeUndefined();
+  });
+
+  it('create with a duplicate thread_key throws (UNIQUE — re-creating a mapped thread is an upstream bug, fail closed) and leaves the first row untouched', () => {
+    const first = store.create(sessionInput());
+
+    expect(() =>
+      store.create(
+        sessionInput({ projectPath: '/tmp/fixtures/proj-b', now: '2026-07-19T00:05:00.000Z' }),
+      ),
+    ).toThrow();
+
+    expect(store.findByThreadKey('thread-key-0001')).toEqual(first);
+  });
+
+  describe('recordDriverSessionId (first-write invariant, ADR-0004 stable session identity)', () => {
+    it('first write onto NULL persists the driver session id, with updated_at = the write now and created_at untouched', () => {
+      const created = store.create(sessionInput());
+
+      store.recordDriverSessionId(created.id, DRIVER_SESSION_ID, '2026-07-19T00:05:00.000Z');
+
+      // Full-row assert: also the updated_at mutation killer for the first
+      // write — a mutant that forgets to write updated_at (or clobbers
+      // created_at) fails here, not just one that skips driver_session_id.
+      expect(store.findByThreadKey('thread-key-0001')).toEqual({
+        ...created,
+        driverSessionId: DRIVER_SESSION_ID,
+        updatedAt: '2026-07-19T00:05:00.000Z',
+      });
+    });
+
+    it('re-recording the SAME id is idempotent: updated_at moves to the new now, every other column stays put', () => {
+      const created = store.create(sessionInput());
+      store.recordDriverSessionId(created.id, DRIVER_SESSION_ID, '2026-07-19T00:05:00.000Z');
+
+      store.recordDriverSessionId(created.id, DRIVER_SESSION_ID, '2026-07-19T00:07:00.000Z');
+
+      // updated_at advancing to the SECOND write's now is what kills a
+      // mutant whose idempotent branch is a pure no-op (returns without
+      // touching the row at all).
+      expect(store.findByThreadKey('thread-key-0001')).toEqual({
+        ...created,
+        driverSessionId: DRIVER_SESSION_ID,
+        updatedAt: '2026-07-19T00:07:00.000Z',
+      });
+    });
+
+    it('a DIFFERENT id over an existing non-NULL value throws and leaves the row byte-identical (never silently replaced)', () => {
+      const created = store.create(sessionInput());
+      store.recordDriverSessionId(created.id, DRIVER_SESSION_ID, '2026-07-19T00:05:00.000Z');
+      const beforeConflict = store.findByThreadKey('thread-key-0001');
+
+      expect(() =>
+        store.recordDriverSessionId(
+          created.id,
+          OTHER_DRIVER_SESSION_ID,
+          '2026-07-19T00:09:00.000Z',
+        ),
+      ).toThrow(/already has driver session id/);
+
+      // Full-row assert: neither the id nor updated_at may move on the
+      // rejected write.
+      expect(store.findByThreadKey('thread-key-0001')).toEqual(beforeConflict);
+    });
+
+    it('throws an explicit error for an unknown session id', () => {
+      expect(() =>
+        store.recordDriverSessionId(999999, DRIVER_SESSION_ID, '2026-07-19T00:05:00.000Z'),
+      ).toThrow(/no agent session with id 999999/);
+    });
+  });
+
+  describe('listByProject', () => {
+    it('returns only that project’s sessions, in id (creation) order, and [] for an unmapped project', () => {
+      store.create(sessionInput({ threadKey: 'thread-key-0001' }));
+      store.create(
+        sessionInput({ threadKey: 'thread-key-0002', projectPath: '/tmp/fixtures/proj-b' }),
+      );
+      store.create(sessionInput({ threadKey: 'thread-key-0003' }));
+
+      expect(store.listByProject('/tmp/fixtures/proj-a').map((session) => session.threadKey)).toEqual(
+        ['thread-key-0001', 'thread-key-0003'],
+      );
+      expect(store.listByProject('/tmp/fixtures/proj-b').map((session) => session.threadKey)).toEqual(
+        ['thread-key-0002'],
+      );
+      expect(store.listByProject('/tmp/fixtures/no-such-proj')).toEqual([]);
+    });
   });
 });

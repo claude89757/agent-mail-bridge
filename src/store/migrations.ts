@@ -74,6 +74,31 @@ CREATE TABLE clarification_requests (
 CREATE INDEX idx_clarification_command ON clarification_requests(command_id);
 `;
 
+// D-P4B7-2 (Phase 4 batch 7 plan, docs/superpowers/plans/
+// 2026-07-19-phase-4-batch7-router-core.md): adds agent_sessions, the
+// thread↔session mapping behind Phase 4 routing's CONTINUE_SESSION verdict
+// (src/domain/routing.ts) — threat-model C8's "mail thread ↔ agent session"
+// persistence. The table is entirely new, so like 003 this is CREATE-only,
+// no ALTER/backfill. `src/store/sessionStore.ts` is the only reader/writer.
+// driver_session_id is nullable BY DESIGN: the mapping row is created when
+// a thread is first routed, BEFORE the driver's `thread.started` event
+// supplies the id (ADR-0004's thread_id, stable across resumes).
+// Deliberately NO foreign key to commands: one session spans MANY commands
+// over its thread's lifetime (every reply on the thread is its own commands
+// row), so there is no single owning command to reference — unlike
+// clarification_requests above, which binds to exactly one command.
+const SCHEMA_V4 = `
+CREATE TABLE agent_sessions (
+  id INTEGER PRIMARY KEY,
+  thread_key TEXT NOT NULL UNIQUE,
+  project_path TEXT NOT NULL,
+  driver_session_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;
+CREATE INDEX idx_agent_sessions_project ON agent_sessions(project_path);
+`;
+
 export interface Migration {
   version: number;
   sql: string;
@@ -83,4 +108,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
   { version: 3, sql: SCHEMA_V3 },
+  { version: 4, sql: SCHEMA_V4 },
 ];

@@ -22,12 +22,12 @@ function listTables(db: Db): string[] {
 // Guards decision D-P2-9 (SQLite schema v1) and the pragma/migration contract
 // that the rest of the store layer depends on.
 describe('openDatabase (D-P2-9 schema v1)', () => {
-  it('bumps user_version to the latest known migration (3, D-P4B4-3) on a fresh in-memory database', () => {
+  it('bumps user_version to the latest known migration (4, D-P4B7-2) on a fresh in-memory database', () => {
     const db = openDatabase(':memory:');
 
     const userVersion = db.pragma('user_version', { simple: true });
 
-    expect(userVersion).toBe(3);
+    expect(userVersion).toBe(4);
     db.close();
   });
 
@@ -90,13 +90,13 @@ describe('openDatabase (D-P2-9 schema v1)', () => {
       rmSync(dir, { recursive: true, force: true });
     });
 
-    it('re-opening is idempotent (user_version stays 3) and journaling is really WAL', () => {
+    it('re-opening is idempotent (user_version stays 4) and journaling is really WAL', () => {
       const first = openDatabase(dbPath);
       first.close();
 
       const second = openDatabase(dbPath);
 
-      expect(second.pragma('user_version', { simple: true })).toBe(3);
+      expect(second.pragma('user_version', { simple: true })).toBe(4);
       expect(second.pragma('journal_mode', { simple: true })).toBe('wal');
       second.close();
     });
@@ -300,7 +300,15 @@ describe('migration 003 (D-P4B4-3 clarification_requests)', () => {
   ];
 
   it('a fresh database goes straight to user_version 3 with clarification_requests present (STRICT) and its index', () => {
-    const db = openDatabase(':memory:');
+    // Pinned to migrations 001..003 only (D-P4B7-2 added a real migration 4,
+    // so the default/full ladder no longer stops at 3) — this test's intent
+    // is specifically "migration 003's own effect", not "wherever the ladder
+    // currently ends". Same fix already applied to the migration 002 block
+    // above when migration 003 itself landed.
+    const db = openDatabase(
+      ':memory:',
+      MIGRATIONS.filter((migration) => migration.version <= 3),
+    );
 
     expect(db.pragma('user_version', { simple: true })).toBe(3);
 
@@ -336,7 +344,14 @@ describe('migration 003 (D-P4B4-3 clarification_requests)', () => {
     expect(db.pragma('user_version', { simple: true })).toBe(2);
     expect(listTables(db)).not.toContain('clarification_requests');
 
-    applyMigrations(db, MIGRATIONS);
+    // Pinned to migrations 001..003 for the same reason as the fresh-database
+    // test above (D-P4B7-2's migration 4 exists now): this call's job is
+    // "apply exactly migration 003 on top of the v2 fixture," not "run the
+    // whole current ladder."
+    applyMigrations(
+      db,
+      MIGRATIONS.filter((migration) => migration.version <= 3),
+    );
 
     expect(db.pragma('user_version', { simple: true })).toBe(3);
     const columns = db
@@ -344,6 +359,71 @@ describe('migration 003 (D-P4B4-3 clarification_requests)', () => {
       .all()
       .map((row) => row.name);
     expect(columns.sort()).toEqual([...CLARIFICATION_COLUMNS].sort());
+    db.close();
+  });
+});
+
+// Guards decision D-P4B7-2 (thread↔session mapping persistence, Phase 4
+// batch 7 plan docs/superpowers/plans/2026-07-19-phase-4-batch7-router-core.md):
+// migration 004 adds the agent_sessions table backing
+// src/store/sessionStore.ts. The table is entirely new — CREATE-only, like
+// 003 and unlike 002. Deliberately NO foreign key to commands: one session
+// spans MANY commands over its thread's lifetime (every reply on the thread
+// is its own commands row), so there is no single owning command to
+// reference — unlike clarification_requests, which binds to exactly one.
+describe('migration 004 (D-P4B7-2 agent_sessions)', () => {
+  const SESSION_COLUMNS = [
+    'id',
+    'thread_key',
+    'project_path',
+    'driver_session_id',
+    'created_at',
+    'updated_at',
+  ];
+
+  it('a fresh database goes straight to user_version 4 with agent_sessions present (STRICT) and its project index', () => {
+    const db = openDatabase(':memory:');
+
+    expect(db.pragma('user_version', { simple: true })).toBe(4);
+
+    const columns = db
+      .prepare<[], { name: string }>('PRAGMA table_info(agent_sessions)')
+      .all()
+      .map((row) => row.name);
+    expect(columns.sort()).toEqual([...SESSION_COLUMNS].sort());
+
+    // STRICT mode really took effect (same pragma_table_list technique as
+    // the migration 003 block above).
+    const tableList = db
+      .prepare<[], { strict: number }>('PRAGMA table_list(agent_sessions)')
+      .all();
+    expect(tableList).toEqual([expect.objectContaining({ strict: 1 })]);
+
+    expect(listTables(db)).toContain('agent_sessions');
+    const indexNames = db
+      .prepare<[], { name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'agent_sessions'",
+      )
+      .all()
+      .map((row) => row.name);
+    expect(indexNames).toContain('idx_agent_sessions_project');
+    db.close();
+  });
+
+  it('a v3 database (migrations 001..003 only) migrates to v4, adding agent_sessions', () => {
+    const v3Migrations = MIGRATIONS.filter((migration) => migration.version <= 3);
+    const db = openDatabase(':memory:', v3Migrations);
+    expect(db.pragma('user_version', { simple: true })).toBe(3);
+    expect(listTables(db)).not.toContain('agent_sessions');
+
+    applyMigrations(db, MIGRATIONS);
+
+    expect(db.pragma('user_version', { simple: true })).toBe(4);
+    const columns = db
+      .prepare<[], { name: string }>('PRAGMA table_info(agent_sessions)')
+      .all()
+      .map((row) => row.name);
+    expect(columns.sort()).toEqual([...SESSION_COLUMNS].sort());
     db.close();
   });
 });
