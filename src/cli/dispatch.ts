@@ -99,6 +99,12 @@ export interface DispatchIo {
   readonly runPause: () => number;
   /** Handles `resume` -- `main.ts` binds `runResume` with a fresh `now`. */
   readonly runResume: () => number;
+  /** Handles `install <rest>` (D-P5B13-5) -- `main.ts` binds
+   * `src/cli/service.ts`'s `runInstall` (printing included); the rest of
+   * the argv passes through so --force parsing lives in the handler. */
+  readonly runInstall: (args: readonly string[]) => number;
+  /** Handles `uninstall <rest>` (D-P5B13-5) -- same binding pattern. */
+  readonly runUninstall: (args: readonly string[]) => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +123,8 @@ const COMMANDS: readonly CommandSummary[] = [
   { name: 'status', summary: 'Show bridge status from the database (does not probe a running daemon)' },
   { name: 'pause', summary: 'Pause mail processing (takes effect within one poll interval)' },
   { name: 'resume', summary: 'Resume mail processing (takes effect within one poll interval)' },
+  { name: 'install', summary: 'Write the launchd/systemd user service file and print the activation command (never runs it)' },
+  { name: 'uninstall', summary: 'Remove the service file and list the remaining artifacts to clean up manually' },
   { name: 'logout', summary: 'Remove stored credentials and config (not implemented yet)' },
 ];
 
@@ -256,6 +264,14 @@ export async function dispatch(argv: readonly string[], io: DispatchIo): Promise
 
   if (head === 'resume') {
     return io.runResume();
+  }
+
+  if (head === 'install') {
+    return io.runInstall(rest);
+  }
+
+  if (head === 'uninstall') {
+    return io.runUninstall(rest);
   }
 
   if (PLACEHOLDER_COMMANDS.has(head)) {

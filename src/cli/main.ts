@@ -13,18 +13,20 @@
  * `process.exitCode` (not `process.exit()`) so any buffered stdout/stderr
  * writes flush before the process exits.
  */
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 import { buildDefaultDoctorIo } from './doctor.js';
 import { dispatch } from './dispatch.js';
 import type { DispatchIo, Writer } from './dispatch.js';
+import { runInstall, runUninstall } from './service.js';
+import type { ServiceIo } from './service.js';
 import { runSetup } from './setup.js';
 import type { SetupIo } from './setup.js';
 import { buildRealStartIo, runStart } from './start.js';
 import { runPause, runResume, runStatus } from './statusCmd.js';
-import type { StatusCommandResult, StatusIo } from './statusCmd.js';
+import type { StatusIo } from './statusCmd.js';
 
 /**
  * Reads the running package's own version straight from `package.json` at
@@ -91,7 +93,30 @@ function buildRealDispatchIo(): DispatchIo {
     readFileSync: (path) => readFileSync(path, 'utf8'),
     openDatabase: doctorIo.openDatabase,
   };
-  const printResult = (result: StatusCommandResult): number => {
+  // `install`/`uninstall` (D-P5B13-5): platform/nodePath/entryPath are the
+  // real process values, read ONCE here at the assembly edge. entryPath ''
+  // (argv[1] somehow absent) makes runInstall fail closed instead of
+  // writing a unit that supervises nothing.
+  const serviceIo: ServiceIo = {
+    platform: process.platform,
+    nodePath: process.execPath,
+    entryPath: process.argv[1] ?? '',
+    env: process.env,
+    homedir: homedir(),
+    exists: (path) => existsSync(path),
+    mkdir: (path) => {
+      mkdirSync(path, { recursive: true });
+    },
+    writeFile: (path, content) => {
+      writeFileSync(path, content, 'utf8');
+    },
+    unlink: (path) => {
+      unlinkSync(path);
+    },
+  };
+  // Structural: covers StatusCommandResult, SetupResult and
+  // ServiceCommandResult alike (exit 0 ⇒ stdout, non-zero ⇒ stderr).
+  const printResult = (result: { exitCode: number; messages: readonly string[] }): number => {
     const print = result.exitCode === 0 ? writer.out : writer.err;
     for (const message of result.messages) {
       print(message);
@@ -123,6 +148,10 @@ function buildRealDispatchIo(): DispatchIo {
     runStatus: () => printResult(runStatus(statusIo)),
     runPause: () => printResult(runPause(statusIo, new Date())),
     runResume: () => printResult(runResume(statusIo, new Date())),
+    // D-P5B13-5: the service-file commands (write/remove + print-only
+    // activation; amb never runs the service manager).
+    runInstall: (args) => printResult(runInstall(args, serviceIo)),
+    runUninstall: (args) => printResult(runUninstall(args, serviceIo)),
   };
 }
 

@@ -3,8 +3,8 @@
  * runDaemonShell, exit code mapped from the shell outcome — `signal` ⇒ 0
  * (a requested stop is a success), `fatal` ⇒ 1 (three consecutive failed
  * rounds; restart policy belongs to the operator's supervisor). The daemon
- * runs in the FOREGROUND: v0.1 ships no daemonizer — launchd/systemd units
- * are the packaging batch's concern.
+ * runs in the FOREGROUND: v0.1 ships no daemonizer — `amb install`
+ * (`./service.ts`) writes the launchd/systemd user unit that supervises it.
  *
  * `--dry-run` overrides `config.dryRun` to `true` for this run only: a
  * full-chain rehearsal in which every dispatch intent lands

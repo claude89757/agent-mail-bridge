@@ -71,6 +71,12 @@ function baseDispatchIo(overrides: Partial<DispatchIo> = {}): DispatchIo {
     runResume: () => {
       throw new Error('unexpected runResume call in this test');
     },
+    runInstall: () => {
+      throw new Error('unexpected runInstall call in this test');
+    },
+    runUninstall: () => {
+      throw new Error('unexpected runUninstall call in this test');
+    },
     ...overrides,
   };
 }
@@ -168,6 +174,32 @@ describe('dispatch — daemon command routing (D-P5B12-5)', () => {
       expect(exitCode).toBe(0);
     },
   );
+
+  // D-P5B13-5: the two service-file commands route like setup — the rest of
+  // the argv is passed through so the handler owns its own flag parsing
+  // (--force lives in service.ts, not here).
+  it.each([
+    ['install', 'runInstall'],
+    ['uninstall', 'runUninstall'],
+  ] as const)(
+    'routes "%s" to the injected %s handler, passing through the remaining args',
+    async (command, handler) => {
+      const writer = makeWriter();
+      let receivedArgs: readonly string[] | undefined;
+      const io = baseDispatchIo({
+        writer,
+        [handler]: (args: readonly string[]) => {
+          receivedArgs = args;
+          return 11;
+        },
+      });
+
+      const exitCode = await dispatch([command, '--force'], io);
+
+      expect(receivedArgs).toEqual(['--force']);
+      expect(exitCode).toBe(11);
+    },
+  );
 });
 
 describe('dispatch — --version', () => {
@@ -187,7 +219,17 @@ describe('dispatch — --version', () => {
 });
 
 describe('dispatch — --help / no-args (D-P5S-5 full command surface)', () => {
-  const ALL_COMMANDS = ['doctor', 'setup', 'start', 'status', 'pause', 'resume', 'logout'];
+  const ALL_COMMANDS = [
+    'doctor',
+    'setup',
+    'start',
+    'status',
+    'pause',
+    'resume',
+    'install',
+    'uninstall',
+    'logout',
+  ];
 
   it('--help lists every command and both flags on stdout, exit 0', async () => {
     const writer = makeWriter();
