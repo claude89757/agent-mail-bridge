@@ -78,8 +78,14 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   stress-tested 4 MB crafted inputs and parser state-confusion sequences);
   exact-equality domain match pins subdomains to `DOMAIN_MISMATCH` both
   directions, and homograph/NFC-variant domains never compare equal (fail
-  closed). Adapting to the measured self-to-self header shape and the
-  `authservId` trust policy remain [P0-3] / Phase 3.
+  closed). **P0-3 measured (2026-07-19): legitimate self-submitted mail
+  carries NO `Authentication-Results` at all** (SMTP and web/app paths
+  short-circuit past MX), while every MX-ingested external sample carries
+  them — so the wiring must INVERT the factor's polarity for
+  `From==To==self` mail (AR present ⇒ external ⇒ quarantine). Design change
+  vs the spec assumption ⇒ blocked on the user accepting
+  [ADR-0003](adr/0003-self-mail-carries-no-auth-results.md) (red line 6);
+  the `authservId` trust policy applies to the AR-present reject branch.
 - **C3 — Echo gate.** Bridge-sent mail carries an own `Message-ID` and
   `X-AMB-Outbox-ID`; both are recorded before send, so inbound copies are
   classified `SYSTEM_ECHO` and never routed.
@@ -177,7 +183,7 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
 
 | Item | Where decided | Status |
 | --- | --- | --- |
-| Self-to-self Gmail `Authentication-Results` shape | P0-3 ADR | waiting on the user's send confirmation (red line 3) |
-| IMAP IDLE reconnect / UIDVALIDITY behavior in practice | P0-1 ADR | read-only portion measured (IDLE stable 3×25 min, UIDVALIDITY constant, push real-time); ADR draft pending the send-visibility half |
-| `codex exec --json` session id extraction and resume semantics | P0-2 ADR | blocked on the local codex CLI version decision |
+| Self-to-self Gmail `Authentication-Results` shape | [ADR-0003](adr/0003-self-mail-carries-no-auth-results.md) | **measured — there are none on legitimate self-mail**; polarity-inverted gate proposed, awaiting the user's decision (red line 6) |
+| IMAP IDLE reconnect / UIDVALIDITY behavior in practice | [ADR-0002](adr/0002-p0-1-gmail-imap-smtp-go.md) | **complete — Go** (read + send halves measured; self-send visibility ~15–30 s) |
+| `codex exec --json` session id extraction and resume semantics | P0-2 ADR | unblocked (CLI upgraded 0.140.0 → 0.144.6, probe green); measurement in progress |
 | Linux credential storage (libsecret vs encrypted file, 0600) | implementation-phase ADR | open; CLI meanwhile enforces 0600/0700 on the env file (C10) |

@@ -18,4 +18,6 @@ ADR that references the old one.
 | ADR | Title | Status |
 | --- | --- | --- |
 | [0001](0001-sqlite-driver-better-sqlite3.md) | SQLite driver — better-sqlite3 over node:sqlite | accepted |
-| — | (spike ADRs arrive with Phase 1: P0-1 IMAP stability, P0-2 Codex driver, P0-3 identity factors, P0-4 connector reserve) | — |
+| [0002](0002-p0-1-gmail-imap-smtp-go.md) | P0-1 Gmail IMAP/SMTP stability — Go | accepted |
+| [0003](0003-self-mail-carries-no-auth-results.md) | Self-submitted mail carries no Authentication-Results — identity-gate polarity must invert | **proposed — user decision pending** |
+| — | (remaining spike ADRs: P0-2 Codex driver, P0-4 connector reserve) | — |
