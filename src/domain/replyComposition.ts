@@ -124,6 +124,20 @@ function replaceAllLiteral(text: string, needle: string, placeholder: string): s
 }
 
 /**
+ * Path-needle normalization (review fix M-1): a trailing-slash-configured
+ * path (`/tmp/x/wt/`) would never match a BARE mention of the same path,
+ * leaving it standing in the mail. Today's producers (worktreeManager's
+ * join products, `os.homedir()`) never carry a trailing slash, but
+ * `ScrubContext` is an exported seam the daemon batch will construct on
+ * its own — so the needle is normalized here rather than trusted. A needle
+ * that strips to fewer than 2 chars (e.g. `///`) falls to the existing
+ * `replaceAllLiteral` guard and is skipped entirely.
+ */
+function stripTrailingSlashes(needle: string): string {
+  return needle.replace(/\/+$/, '');
+}
+
+/**
  * The one scrub funnel (D-P4B9-1): every piece of text a composer emits —
  * subject, meta lines, event lines, terminal texts — goes through here.
  * Fixed order and idempotence are documented in the module doc comment and
@@ -132,9 +146,9 @@ function replaceAllLiteral(text: string, needle: string, placeholder: string): s
 export function scrubText(text: string, ctx: ScrubContext): string {
   let out = text;
   if (ctx.worktreePath !== null) {
-    out = replaceAllLiteral(out, ctx.worktreePath, '<cwd>');
+    out = replaceAllLiteral(out, stripTrailingSlashes(ctx.worktreePath), '<cwd>');
   }
-  out = replaceAllLiteral(out, ctx.homeDir, '<home>');
+  out = replaceAllLiteral(out, stripTrailingSlashes(ctx.homeDir), '<home>');
   out = out.replace(
     SECRET_KEYWORD_VALUE_PATTERN,
     (_match, keyword: string, separator: string) => `${keyword}${separator}<redacted>`,
@@ -273,10 +287,20 @@ const FALLBACK_SUBJECT = 'amb: task update';
 const REPLY_PREFIX_PATTERN = /^\s*re:/i;
 
 /**
- * D-P4B9-3 subject rules: reply-prefix logic, then scrub, then SEMANTIC
- * single-lining (CR/LF -> space; nodemailer's header folding is transport
- * insurance, but emitting a single-line subject is this layer's own
- * responsibility), then a hard 200-char cap.
+ * D-P4B9-3 subject rules: reply-prefix logic, then SEMANTIC single-lining
+ * (CR/LF -> space; nodemailer's header folding is transport insurance, but
+ * emitting a single-line subject is this layer's own responsibility), then
+ * scrub, then a hard 200-char cap.
+ *
+ * Single-lining runs BEFORE the scrub (review fix I-1 — the plan's
+ * original scrub-then-single-line order was the gap): the keyword regex's
+ * `[^\S\n]` newline guard is correct for multi-line BODY text, but a
+ * subject is about to BECOME one line — scrubbing first would let
+ * `password:\n<value>` dodge the keyword rule and then be glued back into
+ * `password: <value>` inside the sent subject. Gluing first is strictly
+ * safer here: it can only make the keyword rule match MORE (never less),
+ * and a space-glue cannot assemble a path needle occurrence that was not
+ * already present.
  */
 function composeSubject(originalSubject: string | null, ctx: ScrubContext): string {
   const base =
@@ -285,13 +309,16 @@ function composeSubject(originalSubject: string | null, ctx: ScrubContext): stri
       : REPLY_PREFIX_PATTERN.test(originalSubject)
         ? originalSubject
         : `Re: ${originalSubject}`;
-  const singleLine = scrubText(base, ctx).replace(/\r\n|\r|\n/g, ' ');
+  const singleLine = scrubText(base.replace(/\r\n|\r|\n/g, ' '), ctx);
   return singleLine.length <= SUBJECT_CAP ? singleLine : singleLine.slice(0, SUBJECT_CAP);
 }
 
 /** Meta region (skeleton region 2): project name, intent id, verdict when
- *  one exists — and NEVER a path (module doc comment). */
-function metaLines(ctx: ReplyContext, verdictKind: string | null): string[] {
+ *  one exists — and NEVER a path (module doc comment). `verdictKind` is a
+ *  CLOSED literal union (review fix M-2), which is exactly what makes the
+ *  un-scrubbed `verdict:` line safe: the type system, not a runtime
+ *  scrub, keeps arbitrary text out of this parameter. */
+function metaLines(ctx: ReplyContext, verdictKind: RouteVerdict['kind'] | null): string[] {
   const lines = [
     scrubText(`project: ${ctx.projectName ?? '(unknown)'}`, ctx.scrub),
     scrubText(`intent: ${ctx.intentId}`, ctx.scrub),

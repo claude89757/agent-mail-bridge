@@ -117,6 +117,24 @@ describe('scrubText units (D-P4B9-1)', () => {
     );
   });
 
+  it('normalizes trailing-slash needles so bare path mentions are still masked (review M-1)', () => {
+    // ScrubContext is an exported seam: a daemon-built context may carry
+    // '/tmp/fixtures/wt-a/' while the text mentions the bare path — the
+    // needle is normalized (all trailing '/' stripped) before matching.
+    const out = scrubText(`saw ${WORKTREE} and ${HOME}/notes`, {
+      worktreePath: `${WORKTREE}/`,
+      homeDir: `${HOME}//`,
+    });
+
+    expect(out).toBe('saw <cwd> and <home>/notes');
+  });
+
+  it('a needle that is ONLY slashes strips to empty and is skipped (needle >= 2 guard on the stripped form)', () => {
+    expect(scrubText('/// stays as-is', { worktreePath: '///', homeDir: HOME })).toBe(
+      '/// stays as-is',
+    );
+  });
+
   it('with a null worktreePath only the home path is masked', () => {
     const out = scrubText(`saw ${HOME}/notes.txt`, { worktreePath: null, homeDir: HOME });
 
@@ -587,6 +605,24 @@ describe('reply subject (D-P4B9-3)', () => {
     });
 
     expect(mail.subjectRedacted).toBe('Re: check <cwd>/x.ts');
+  });
+
+  it('single-lines BEFORE scrubbing: a newline-split keyword secret cannot dodge the mask (review I-1)', () => {
+    // Scrub-then-single-line would let 'password:\n<value>' slip through:
+    // the keyword regex's [^\S\n] guard (correct for multi-line BODIES)
+    // does not bite across the newline, and the later CR/LF gluing would
+    // reassemble 'password: <value>' INTO the sent subject. Single-lining
+    // first means the glued form is what the scrub sees.
+    expect(
+      composeAckReply(replyContext({ originalSubject: 'password:\nhunter-low' }), {
+        verdict: 'DISPATCH_NEW',
+      }).subjectRedacted,
+    ).toBe('Re: password: <redacted>');
+    expect(
+      composeAckReply(replyContext({ originalSubject: 'token=\r\nAa-Aa-Tok-0001' }), {
+        verdict: 'DISPATCH_NEW',
+      }).subjectRedacted,
+    ).toBe('Re: token= <redacted>');
   });
 });
 
