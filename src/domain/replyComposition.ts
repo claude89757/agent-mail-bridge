@@ -52,7 +52,27 @@
  * `scrubText` is idempotent (test-pinned): its placeholders contain no
  * masked-pattern triggers, so double-scrubbing (e.g. a driver-synthesized
  * errorText that already replaced cwd/home) is harmless.
+ *
+ * Composers (D-P4B9-3): four entry points map `dispatchIntent`'s outcomes
+ * onto ready-to-send mails — `composeResultReply` (executed: completed ⇒
+ * RESULT, failed ⇒ ERROR), `composeDispatchFailedReply` (ERROR),
+ * `composeDryRunReply` (RESULT — the dry-run's product IS the "what would
+ * happen" report) and `composeAckReply` (ACK; whether an ack is actually
+ * sent is the daemon's configuration call, this batch only composes). Body
+ * skeleton is FIXED (test-pinned): status line -> meta region (project
+ * name, intent id, verdict — NEVER a path: `projectName` is an index name,
+ * and any path can only ever appear as a `<cwd>`/`<home>` placeholder) ->
+ * event region (`[agent] `/`[tool] ` lines; terminal events are rendered
+ * ONLY in the terminal region, never duplicated as event lines) -> terminal
+ * region. Note the asymmetry with the dispatch pipeline: a CLARIFY_* verdict
+ * short-circuits `dispatchIntent` WITHOUT producing a reply (clarification
+ * record + token + mail are designed together in the clarification batch),
+ * but `composeDryRunReply` legitimately REPORTS "would clarify" — a dry-run
+ * report about clarifying is not a clarification. CLARIFY candidate lists
+ * show `name` only, never `path` (spec candidate-display gate, test-pinned
+ * zero path occurrence).
  */
+import type { RouteVerdict } from './routing.js';
 
 export interface ScrubContext {
   /** The session's worktree absolute path; `null` when none exists yet
@@ -177,4 +197,251 @@ export function assembleCappedBody(parts: {
     }
     dropped += 1;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Locally re-declared upper-layer shapes (see the module doc comment)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirror of `src/store/outboxStore.ts`'s `OutboxKind`, NARROWED to the
+ * kinds this batch's composers produce ('CLARIFICATION' composition is the
+ * clarification batch's scope). Re-declared instead of imported because
+ * `src/domain/` never imports from upper layers — not even type-only (no
+ * existing domain file does, and this module keeps that invariant). A
+ * narrower literal union is structurally assignable to `OutboxKind`, so
+ * nothing upstream notices the difference.
+ */
+export type ComposedReplyKind = 'ACK' | 'RESULT' | 'ERROR';
+
+/**
+ * Structurally identical to `src/transports/types.ts`'s `OutboundMail`
+ * (with `kind` narrowed to `ComposedReplyKind`, a subtype of `OutboxKind`)
+ * — domain does not reverse-depend on upper layers; TypeScript's structural
+ * typing lets every composer product feed `MailTransport.send` directly.
+ * `tests/unit/reply-composition.test.ts` pins the compatibility with an
+ * `OutboundMail`-annotated assignment, so any drift between the two shapes
+ * is a compile error there, not a silent fork. The `subjectRedacted`/
+ * `bodyRedacted` field names ARE the contract (C9): by the time text sits
+ * in this shape it has passed `scrubText`.
+ */
+export interface ComposedReply {
+  kind: ComposedReplyKind;
+  commandId: number | null;
+  subjectRedacted: string;
+  bodyRedacted: string;
+}
+
+/**
+ * Structurally identical to `src/drivers/types.ts`'s `DriverEvent` — same
+ * re-declaration rationale as `ComposedReply`, same test-side compile pin
+ * (a `DriverEvent[]` is passed to `composeResultReply` verbatim). All four
+ * members are mirrored so the FULL buffered event list from
+ * `DispatchOutcome.executed` type-checks unchanged; terminal members are
+ * skipped at render time, not at the type boundary.
+ */
+export type ComposerDriverEvent =
+  | { kind: 'agent-message'; text: string }
+  | { kind: 'tool-activity'; summary: string }
+  | { kind: 'completed'; resultText: string }
+  | { kind: 'failed'; errorText: string };
+
+// ---------------------------------------------------------------------------
+// Composers (D-P4B9-3)
+// ---------------------------------------------------------------------------
+
+/** Everything every composer needs about the command being replied to. */
+export interface ReplyContext {
+  /** The original command mail's subject; `null` ⇒ fallback subject. Runs
+   *  through `scrubText` like everything else. */
+  originalSubject: string | null;
+  commandId: number;
+  intentId: string;
+  /** Display name from the project index (a NAME, never a path); `null`
+   *  when no project is known (e.g. early dispatch failures). */
+  projectName: string | null;
+  scrub: ScrubContext;
+}
+
+/** Subject cap in chars (D-P4B9-3, plan-locked). */
+const SUBJECT_CAP = 200;
+
+const FALLBACK_SUBJECT = 'amb: task update';
+
+/** Case-insensitive `re:` detection; one hit means "already a reply", so
+ *  multiple stacked prefixes are tolerated as-is (never `Re: Re: ...`+1). */
+const REPLY_PREFIX_PATTERN = /^\s*re:/i;
+
+/**
+ * D-P4B9-3 subject rules: reply-prefix logic, then scrub, then SEMANTIC
+ * single-lining (CR/LF -> space; nodemailer's header folding is transport
+ * insurance, but emitting a single-line subject is this layer's own
+ * responsibility), then a hard 200-char cap.
+ */
+function composeSubject(originalSubject: string | null, ctx: ScrubContext): string {
+  const base =
+    originalSubject === null
+      ? FALLBACK_SUBJECT
+      : REPLY_PREFIX_PATTERN.test(originalSubject)
+        ? originalSubject
+        : `Re: ${originalSubject}`;
+  const singleLine = scrubText(base, ctx).replace(/\r\n|\r|\n/g, ' ');
+  return singleLine.length <= SUBJECT_CAP ? singleLine : singleLine.slice(0, SUBJECT_CAP);
+}
+
+/** Meta region (skeleton region 2): project name, intent id, verdict when
+ *  one exists — and NEVER a path (module doc comment). */
+function metaLines(ctx: ReplyContext, verdictKind: string | null): string[] {
+  const lines = [
+    scrubText(`project: ${ctx.projectName ?? '(unknown)'}`, ctx.scrub),
+    scrubText(`intent: ${ctx.intentId}`, ctx.scrub),
+  ];
+  if (verdictKind !== null) {
+    lines.push(`verdict: ${verdictKind}`);
+  }
+  return lines;
+}
+
+/** Event region entries: `[agent] `/`[tool] ` lines, each text through the
+ *  scrub+cap funnel. Terminal events are NOT rendered here — the caller's
+ *  `terminal` field feeds the terminal region, single-sourced. */
+function eventEntries(
+  events: readonly ComposerDriverEvent[],
+  ctx: ScrubContext,
+): string[] {
+  const entries: string[] = [];
+  for (const event of events) {
+    if (event.kind === 'agent-message') {
+      entries.push(`[agent] ${scrubAndCapEventText(event.text, ctx)}`);
+    } else if (event.kind === 'tool-activity') {
+      entries.push(`[tool] ${scrubAndCapEventText(event.summary, ctx)}`);
+    }
+  }
+  return entries;
+}
+
+/**
+ * Executed outcome -> reply mail. `terminal.kind === 'completed'` ⇒ RESULT
+ * with a `result:` region; `failed` ⇒ ERROR with an `error:` region (the
+ * driver already scrubbed its synthesized errorText once — idempotence
+ * makes this second pass harmless, and agent-produced failure text gets
+ * its FIRST pass here). The `events` list may include the terminal event
+ * (dispatch buffers it last); it is rendered only in the terminal region.
+ */
+export function composeResultReply(
+  ctx: ReplyContext,
+  outcome: {
+    verdict: 'DISPATCH_NEW' | 'CONTINUE_SESSION';
+    terminal:
+      | { kind: 'completed'; resultText: string }
+      | { kind: 'failed'; errorText: string };
+    events: readonly ComposerDriverEvent[];
+  },
+): ComposedReply {
+  const { terminal } = outcome;
+  const completed = terminal.kind === 'completed';
+  const entries = eventEntries(outcome.events, ctx.scrub);
+  const head = [
+    scrubText(completed ? `✅ completed (${outcome.verdict})` : `❌ failed (${outcome.verdict})`, ctx.scrub),
+    '',
+    ...metaLines(ctx, outcome.verdict),
+    ...(entries.length > 0 ? ['', 'events:'] : []),
+  ];
+  const terminalText = terminal.kind === 'completed' ? terminal.resultText : terminal.errorText;
+  const tail = ['', completed ? 'result:' : 'error:', scrubAndCapEventText(terminalText, ctx.scrub)];
+  return {
+    kind: completed ? 'RESULT' : 'ERROR',
+    commandId: ctx.commandId,
+    subjectRedacted: composeSubject(ctx.originalSubject, ctx.scrub),
+    bodyRedacted: assembleCappedBody({ head, eventEntries: entries, tail }),
+  };
+}
+
+/**
+ * Dispatch-stage failure -> ERROR mail. The batch-8 stage-prefixed reason
+ * wording (`WORKTREE: <msg>`, `SESSION_STATE_INCOMPLETE`, ...) is kept
+ * VERBATIM (post-scrub) — the stage also rides in the status line, and no
+ * verdict line exists because the failure input carries none.
+ */
+export function composeDispatchFailedReply(
+  ctx: ReplyContext,
+  failure: { stage: 'SESSION_STATE' | 'WORKTREE' | 'DRIVER_START'; reason: string },
+): ComposedReply {
+  const head = [
+    scrubText(`❌ dispatch failed (${failure.stage})`, ctx.scrub),
+    '',
+    ...metaLines(ctx, null),
+  ];
+  const tail = ['', 'error:', scrubAndCapEventText(failure.reason, ctx.scrub)];
+  return {
+    kind: 'ERROR',
+    commandId: ctx.commandId,
+    subjectRedacted: composeSubject(ctx.originalSubject, ctx.scrub),
+    bodyRedacted: assembleCappedBody({ head, eventEntries: [], tail }),
+  };
+}
+
+/** Human-language "what would happen" line(s) per verdict — names only,
+ *  never paths, never driver session ids (test-pinned zero occurrence). */
+function dryRunPlanLines(verdict: RouteVerdict, ctx: ScrubContext): string[] {
+  switch (verdict.kind) {
+    case 'DISPATCH_NEW':
+      return [
+        scrubText(`would dispatch a new agent session in project '${verdict.project.name}'.`, ctx),
+      ];
+    case 'CONTINUE_SESSION':
+      return ['would resume the existing agent session bound to this thread.'];
+    case 'CLARIFY_AMBIGUOUS':
+      return [
+        'would ask for clarification — the term matches multiple projects:',
+        ...verdict.candidates.map((candidate) => scrubText(`- ${candidate.name}`, ctx)),
+      ];
+    case 'CLARIFY_NO_MATCH':
+      return ['would ask for clarification — no project matched the given term.'];
+  }
+}
+
+/**
+ * Dry-run verdict -> RESULT mail: the "what would happen" report IS the
+ * dry-run's product. All four verdicts render — including the CLARIFY_*
+ * ones the live pipeline short-circuits without any reply (module doc
+ * comment): reporting "would clarify" is not clarifying.
+ */
+export function composeDryRunReply(ctx: ReplyContext, verdict: RouteVerdict): ComposedReply {
+  const head = [
+    scrubText(`🔍 dry-run (${verdict.kind})`, ctx.scrub),
+    '',
+    ...metaLines(ctx, verdict.kind),
+  ];
+  const tail = ['', 'plan:', ...dryRunPlanLines(verdict, ctx.scrub)];
+  return {
+    kind: 'RESULT',
+    commandId: ctx.commandId,
+    subjectRedacted: composeSubject(ctx.originalSubject, ctx.scrub),
+    bodyRedacted: assembleCappedBody({ head, eventEntries: [], tail }),
+  };
+}
+
+/**
+ * Acknowledgement mail (ACK): status + meta only — the task was accepted
+ * and dispatched; the result reply follows separately. The plan's status
+ * lines cover the four rendered outcomes; the ack's `📨 accepted` line is
+ * this module's own choice in the same shape (status + verdict in parens).
+ * Whether an ACK is sent at all is daemon configuration, out of scope here.
+ */
+export function composeAckReply(
+  ctx: ReplyContext,
+  info: { verdict: 'DISPATCH_NEW' | 'CONTINUE_SESSION' },
+): ComposedReply {
+  const head = [
+    scrubText(`📨 accepted (${info.verdict})`, ctx.scrub),
+    '',
+    ...metaLines(ctx, info.verdict),
+  ];
+  return {
+    kind: 'ACK',
+    commandId: ctx.commandId,
+    subjectRedacted: composeSubject(ctx.originalSubject, ctx.scrub),
+    bodyRedacted: assembleCappedBody({ head, eventEntries: [], tail: [] }),
+  };
 }

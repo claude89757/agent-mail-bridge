@@ -3,11 +3,19 @@ import { describe, expect, it } from 'vitest';
 import {
   assembleCappedBody,
   BODY_TOTAL_CAP,
+  composeAckReply,
+  composeDispatchFailedReply,
+  composeDryRunReply,
+  composeResultReply,
   EVENT_TEXT_CAP,
   scrubAndCapEventText,
   scrubText,
+  type ReplyContext,
   type ScrubContext,
 } from '../../src/domain/replyComposition.js';
+import type { RouteVerdict } from '../../src/domain/routing.js';
+import type { DriverEvent } from '../../src/drivers/types.js';
+import type { OutboundMail } from '../../src/transports/types.js';
 
 // Guards decisions D-P4B9-1..4 (reply composition — threat-model C9's
 // RENDERING half) from
@@ -251,5 +259,355 @@ describe('body assembly cap (D-P4B9-2)', () => {
     const body = assembleCappedBody({ head: ['H'], eventEntries: [], tail: [bigTail] });
 
     expect(body).toBe(`H\n${bigTail}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Composers (D-P4B9-3)
+// ---------------------------------------------------------------------------
+
+function replyContext(overrides: Partial<ReplyContext> = {}): ReplyContext {
+  return {
+    originalSubject: 'run the tests',
+    commandId: 42,
+    intentId: 'intent-0001',
+    projectName: 'proj-a',
+    scrub: SCRUB,
+    ...overrides,
+  };
+}
+
+describe('composeResultReply (D-P4B9-3)', () => {
+  it('renders the fixed four-region skeleton in order for a completed run', () => {
+    // Exact-equality pins region order AND that the terminal event in the
+    // events array is rendered ONLY in the terminal region ('done now'
+    // appears once), never duplicated as an event line.
+    const mail = composeResultReply(replyContext(), {
+      verdict: 'DISPATCH_NEW',
+      terminal: { kind: 'completed', resultText: 'done now' },
+      events: [
+        { kind: 'agent-message', text: 'hello' },
+        { kind: 'tool-activity', summary: 'ran build' },
+        { kind: 'completed', resultText: 'done now' },
+      ],
+    });
+
+    expect(mail.kind).toBe('RESULT');
+    expect(mail.commandId).toBe(42);
+    expect(mail.subjectRedacted).toBe('Re: run the tests');
+    expect(mail.bodyRedacted).toBe(
+      [
+        '✅ completed (DISPATCH_NEW)',
+        '',
+        'project: proj-a',
+        'intent: intent-0001',
+        'verdict: DISPATCH_NEW',
+        '',
+        'events:',
+        '[agent] hello',
+        '[tool] ran build',
+        '',
+        'result:',
+        'done now',
+      ].join('\n'),
+    );
+  });
+
+  it('renders a failed terminal as kind ERROR with the error: region', () => {
+    const mail = composeResultReply(replyContext(), {
+      verdict: 'CONTINUE_SESSION',
+      terminal: { kind: 'failed', errorText: `crash at ${WORKTREE}/x.ts — token: Aa-Aa-Tok-0001` },
+      events: [],
+    });
+
+    expect(mail.kind).toBe('ERROR');
+    expect(mail.bodyRedacted).toContain('❌ failed (CONTINUE_SESSION)');
+    expect(mail.bodyRedacted).toContain('error:\ncrash at <cwd>/x.ts — token: <redacted>');
+    // No events -> no events region at all.
+    expect(mail.bodyRedacted).not.toContain('events:');
+    expectCanaryClean(mail.bodyRedacted);
+  });
+
+  it('omits the project name as (unknown) when none is known', () => {
+    const mail = composeResultReply(replyContext({ projectName: null }), {
+      verdict: 'CONTINUE_SESSION',
+      terminal: { kind: 'completed', resultText: 'ok' },
+      events: [],
+    });
+
+    expect(mail.bodyRedacted).toContain('project: (unknown)');
+  });
+
+  it('scrubs and caps every event line through the one funnel', () => {
+    const longEventText = `${WORKTREE}/big.ts ${'. '.repeat(1200)}`;
+
+    const mail = composeResultReply(replyContext(), {
+      verdict: 'DISPATCH_NEW',
+      terminal: { kind: 'completed', resultText: 'ok' },
+      events: [{ kind: 'agent-message', text: longEventText }],
+    });
+
+    expect(mail.bodyRedacted).toContain('[agent] <cwd>/big.ts');
+    expect(mail.bodyRedacted).toContain('…[truncated ');
+    expect(mail.bodyRedacted).not.toContain('/tmp/fixtures/wt-a');
+  });
+
+  it('wires the body cap: oldest events are dropped, the terminal region survives', () => {
+    const events: DriverEvent[] = Array.from({ length: 25 }, (_, i) => ({
+      kind: 'agent-message' as const,
+      text: `m${String(i)} ${'. '.repeat(490)}`,
+    }));
+
+    const mail = composeResultReply(replyContext(), {
+      verdict: 'DISPATCH_NEW',
+      terminal: { kind: 'completed', resultText: 'ok' },
+      events,
+    });
+
+    expect(mail.bodyRedacted.length).toBeLessThanOrEqual(BODY_TOTAL_CAP);
+    expect(mail.bodyRedacted).toContain(' earlier events omitted]');
+    expect(mail.bodyRedacted).not.toContain('m0 ');
+    expect(mail.bodyRedacted).toContain('m24 ');
+    expect(mail.bodyRedacted).toContain('✅ completed (DISPATCH_NEW)');
+    expect(mail.bodyRedacted).toContain('result:\nok');
+  });
+});
+
+describe('composer leakage canary (D-P4B9-4 — the plan-level canary: subject AND body)', () => {
+  it('a fully poisoned outcome produces a clean subject and body', () => {
+    const mail = composeResultReply(
+      replyContext({ originalSubject: `deploy ${WORKTREE}/app` }),
+      {
+        verdict: 'DISPATCH_NEW',
+        terminal: {
+          kind: 'completed',
+          resultText: `uploaded blob ${'a'.repeat(64)} from /tmp/fixtures/wt-a`,
+        },
+        events: [
+          { kind: 'agent-message', text: 'wrote /tmp/fixtures/wt-a/deep/file.ts' },
+          { kind: 'tool-activity', summary: 'read /tmp/fixtures/home-x/.ssh/id_rsa' },
+          { kind: 'agent-message', text: 'Api_Key: Aa-Aa-Tok-0001' },
+        ],
+      },
+    );
+
+    expectCanaryClean(mail.subjectRedacted);
+    expectCanaryClean(mail.bodyRedacted);
+    expect(mail.subjectRedacted).toBe('Re: deploy <cwd>/app');
+    expect(mail.bodyRedacted).toContain('[agent] wrote <cwd>/deep/file.ts');
+    expect(mail.bodyRedacted).toContain('[tool] read <home>/.ssh/id_rsa');
+    expect(mail.bodyRedacted).toContain('[agent] Api_Key: <redacted>');
+    expect(mail.bodyRedacted).toContain('<redacted:64ch>');
+  });
+
+  it('a poisoned dispatch-failed reason is scrubbed and keeps its stage prefix verbatim', () => {
+    const mail = composeDispatchFailedReply(replyContext(), {
+      stage: 'WORKTREE',
+      reason: `WORKTREE: git failed at ${WORKTREE} — token: Aa-Aa-Tok-0001`,
+    });
+
+    expectCanaryClean(mail.bodyRedacted);
+    expect(mail.bodyRedacted).toContain('error:\nWORKTREE: git failed at <cwd> — token: <redacted>');
+  });
+});
+
+describe('composeDispatchFailedReply (D-P4B9-3)', () => {
+  it('renders the stage in the status line, no verdict line, no events region', () => {
+    const mail = composeDispatchFailedReply(replyContext(), {
+      stage: 'SESSION_STATE',
+      reason: 'SESSION_STATE_INCOMPLETE',
+    });
+
+    expect(mail.kind).toBe('ERROR');
+    expect(mail.commandId).toBe(42);
+    expect(mail.bodyRedacted).toBe(
+      [
+        '❌ dispatch failed (SESSION_STATE)',
+        '',
+        'project: proj-a',
+        'intent: intent-0001',
+        '',
+        'error:',
+        'SESSION_STATE_INCOMPLETE',
+      ].join('\n'),
+    );
+  });
+
+  it('keeps the batch-8 stage-prefixed reason wording verbatim (WORKTREE_MISSING)', () => {
+    const mail = composeDispatchFailedReply(replyContext(), {
+      stage: 'WORKTREE',
+      reason: 'WORKTREE_MISSING',
+    });
+
+    expect(mail.bodyRedacted).toContain('❌ dispatch failed (WORKTREE)');
+    expect(mail.bodyRedacted).toContain('error:\nWORKTREE_MISSING');
+  });
+});
+
+describe('composeDryRunReply (D-P4B9-3)', () => {
+  it('DISPATCH_NEW: names the project, never its path', () => {
+    const verdict: RouteVerdict = {
+      kind: 'DISPATCH_NEW',
+      project: { name: 'proj-a', path: '/tmp/fixtures/proj-a' },
+    };
+
+    const mail = composeDryRunReply(replyContext(), verdict);
+
+    expect(mail.kind).toBe('RESULT');
+    expect(mail.bodyRedacted).toContain('🔍 dry-run (DISPATCH_NEW)');
+    expect(mail.bodyRedacted).toContain('verdict: DISPATCH_NEW');
+    expect(mail.bodyRedacted).toContain("would dispatch a new agent session in project 'proj-a'");
+    expect(mail.bodyRedacted).not.toContain('/tmp/fixtures/proj-a');
+  });
+
+  it('CONTINUE_SESSION: says it would resume, renders neither projectPath nor session id', () => {
+    const verdict: RouteVerdict = {
+      kind: 'CONTINUE_SESSION',
+      session: {
+        projectPath: '/tmp/fixtures/proj-a',
+        driverSessionId: '00000000-0000-4000-8000-000000000001',
+      },
+    };
+
+    const mail = composeDryRunReply(replyContext(), verdict);
+
+    expect(mail.bodyRedacted).toContain('🔍 dry-run (CONTINUE_SESSION)');
+    expect(mail.bodyRedacted).toContain('would resume the existing agent session');
+    expect(mail.bodyRedacted).not.toContain('/tmp/fixtures/proj-a');
+    expect(mail.bodyRedacted).not.toContain('00000000-0000-4000-8000-000000000001');
+  });
+
+  it('CLARIFY_AMBIGUOUS: lists candidate NAMES only — paths never appear', () => {
+    const verdict: RouteVerdict = {
+      kind: 'CLARIFY_AMBIGUOUS',
+      candidates: [
+        { name: 'proj-a', path: '/tmp/fixtures/proj-a' },
+        { name: 'proj-b', path: '/tmp/fixtures/other-root/proj-b' },
+      ],
+    };
+
+    const mail = composeDryRunReply(replyContext(), verdict);
+
+    expect(mail.bodyRedacted).toContain('🔍 dry-run (CLARIFY_AMBIGUOUS)');
+    expect(mail.bodyRedacted).toContain('would ask for clarification');
+    expect(mail.bodyRedacted).toContain('- proj-a');
+    expect(mail.bodyRedacted).toContain('- proj-b');
+    expect(mail.bodyRedacted).not.toContain('/tmp/fixtures/proj-a');
+    expect(mail.bodyRedacted).not.toContain('/tmp/fixtures/other-root');
+    expect(mail.bodyRedacted).not.toContain('path');
+  });
+
+  it('CLARIFY_NO_MATCH: reports that nothing matched', () => {
+    const mail = composeDryRunReply(replyContext(), { kind: 'CLARIFY_NO_MATCH' });
+
+    expect(mail.kind).toBe('RESULT');
+    expect(mail.bodyRedacted).toBe(
+      [
+        '🔍 dry-run (CLARIFY_NO_MATCH)',
+        '',
+        'project: proj-a',
+        'intent: intent-0001',
+        'verdict: CLARIFY_NO_MATCH',
+        '',
+        'plan:',
+        'would ask for clarification — no project matched the given term.',
+      ].join('\n'),
+    );
+  });
+});
+
+describe('composeAckReply (D-P4B9-3)', () => {
+  it('renders status + meta only, kind ACK', () => {
+    const mail = composeAckReply(replyContext(), { verdict: 'DISPATCH_NEW' });
+
+    expect(mail.kind).toBe('ACK');
+    expect(mail.commandId).toBe(42);
+    expect(mail.bodyRedacted).toBe(
+      [
+        '📨 accepted (DISPATCH_NEW)',
+        '',
+        'project: proj-a',
+        'intent: intent-0001',
+        'verdict: DISPATCH_NEW',
+      ].join('\n'),
+    );
+    expect(mail.bodyRedacted).not.toContain('events:');
+    expect(mail.bodyRedacted).not.toContain('result:');
+  });
+});
+
+describe('reply subject (D-P4B9-3)', () => {
+  it('prefixes Re: when the original subject has none', () => {
+    const mail = composeAckReply(replyContext({ originalSubject: 'build it' }), {
+      verdict: 'DISPATCH_NEW',
+    });
+
+    expect(mail.subjectRedacted).toBe('Re: build it');
+  });
+
+  it('keeps an existing re: prefix verbatim — case-insensitive, multiples tolerated', () => {
+    expect(
+      composeAckReply(replyContext({ originalSubject: 're: build it' }), {
+        verdict: 'DISPATCH_NEW',
+      }).subjectRedacted,
+    ).toBe('re: build it');
+    expect(
+      composeAckReply(replyContext({ originalSubject: 'RE: Re: build it' }), {
+        verdict: 'DISPATCH_NEW',
+      }).subjectRedacted,
+    ).toBe('RE: Re: build it');
+  });
+
+  it('falls back to amb: task update when the original subject is null', () => {
+    const mail = composeAckReply(replyContext({ originalSubject: null }), {
+      verdict: 'DISPATCH_NEW',
+    });
+
+    expect(mail.subjectRedacted).toBe('amb: task update');
+  });
+
+  it('single-lines CR/LF and caps the subject at 200 chars', () => {
+    expect(
+      composeAckReply(replyContext({ originalSubject: 'fix\r\nthis\nnow' }), {
+        verdict: 'DISPATCH_NEW',
+      }).subjectRedacted,
+    ).toBe('Re: fix this now');
+
+    const long = 's '.repeat(125);
+    const capped = composeAckReply(replyContext({ originalSubject: long }), {
+      verdict: 'DISPATCH_NEW',
+    }).subjectRedacted;
+    expect(capped).toHaveLength(200);
+    expect(capped).toBe(`Re: ${long}`.slice(0, 200));
+  });
+
+  it('scrubs a path embedded in the subject', () => {
+    const mail = composeAckReply(replyContext({ originalSubject: `check ${WORKTREE}/x.ts` }), {
+      verdict: 'DISPATCH_NEW',
+    });
+
+    expect(mail.subjectRedacted).toBe('Re: check <cwd>/x.ts');
+  });
+});
+
+describe('composer products stay structurally compatible with the upper-layer seams', () => {
+  it('a composer product IS an OutboundMail, and a DriverEvent[] feeds composeResultReply unchanged', () => {
+    // The two type annotations are the compile-time pin for the local
+    // re-declarations in replyComposition.ts (domain never imports from
+    // transports/drivers, not even type-only — structural typing carries
+    // the compatibility, and this test breaks if the shapes ever drift).
+    const events: DriverEvent[] = [
+      { kind: 'tool-activity', summary: 'probe' },
+      { kind: 'completed', resultText: 'ok' },
+    ];
+
+    const mail: OutboundMail = composeResultReply(replyContext(), {
+      verdict: 'CONTINUE_SESSION',
+      terminal: { kind: 'completed', resultText: 'ok' },
+      events,
+    });
+
+    expect(mail.kind).toBe('RESULT');
+    expect(mail.commandId).toBe(42);
   });
 });
