@@ -4,7 +4,7 @@
 | --- | --- | --- |
 | [architecture.md](architecture.md) | skeleton | v0.1 architecture, module boundaries, reliability mapping |
 | [threat-model.md](threat-model.md) | **v0** | assets, attackers, controls, residual risk — security is a headline feature, not an appendix |
-| [security.md](security.md) | skeleton | security design principles; disclosure process lands in Phase 6 |
+| [security.md](security.md) | current | security design principles; disclosure process in the root [`SECURITY.md`](../SECURITY.md) |
 | [privacy.md](privacy.md) | skeleton | what stays on your machine, what travels by mail, what is never logged |
 | [operations.md](operations.md) | skeleton | daemon lifecycle, logs, uninstall order — filled in Phase 5 |
 | [compatibility.md](compatibility.md) | current | pinned toolchain versions and the Codex CLI compatibility policy |

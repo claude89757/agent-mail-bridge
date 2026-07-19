@@ -1,7 +1,7 @@
 # Security
 
-> Status: skeleton — design principles now, disclosure process rehearsed in
-> Phase 6 (a root `SECURITY.md` with reporting instructions ships with v0.1.0).
+> Status: design principles. The disclosure process (reporting channel,
+> supported versions, scope) lives in the root [`SECURITY.md`](../SECURITY.md).
 
 ## Principles
 
@@ -24,6 +24,5 @@
 
 ## Reporting a vulnerability
 
-Interim (pre-v0.1.0): open a GitHub issue *without* exploit details and ask for
-a private channel, or contact the maintainer via the profile on the repository.
-A proper disclosure policy (`SECURITY.md`, response SLO) lands in Phase 6.
+See the root [`SECURITY.md`](../SECURITY.md): GitHub private vulnerability
+reporting is the only channel, with acknowledgement within 7 days.
