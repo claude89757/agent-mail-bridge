@@ -44,6 +44,9 @@ interface HarnessOptions {
    *  at exact moments (`name` is the recorded call name, `n` its 1-based
    *  per-name count). */
   onCall?: (name: string, n: number) => void;
+  /** Custom sleep behavior AFTER the call is recorded (D-P5B13-1: fakes
+   *  honor the `(ms, abort)` seam). Default: resolve immediately. */
+  sleepImpl?: (ms: number, abort: AbortSignal) => Promise<void>;
   pollIntervalMs?: number;
 }
 
@@ -103,8 +106,9 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       },
     },
     homeDir: HOME,
-    sleep: async (ms: number): Promise<void> => {
+    sleep: (ms: number, abort: AbortSignal): Promise<void> => {
       record('sleep', `sleep(${String(ms)})`);
+      return options.sleepImpl?.(ms, abort) ?? Promise.resolve();
     },
     onShutdownSignal: (fn) => {
       handler = fn;
@@ -207,6 +211,53 @@ describe('runDaemonShell (D-P5B12-3)', () => {
       'orphanTick',
       'sweepExpired',
     ]);
+    expect(h.unsubscribed()).toBe(true);
+  });
+
+  it('a signal DURING sleep wakes it immediately (D-P5B13-1 abort pipeline): with a fake sleep that resolves ONLY on abort, the shell still returns { reason: signal } promptly', async () => {
+    // Without the abort pipeline this fake sleep would never resolve and the
+    // shell would hang until the race guard below rejects — the exact
+    // "worst case one poll interval late" latency D-P5B13-1 removes.
+    let sleepEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      sleepEntered = resolve;
+    });
+    const h: Harness = makeHarness({
+      sleepImpl: (_ms, abort) =>
+        new Promise<void>((resolve) => {
+          sleepEntered();
+          if (abort.aborted) {
+            resolve();
+            return;
+          }
+          abort.addEventListener(
+            'abort',
+            () => {
+              resolve();
+            },
+            { once: true },
+          );
+        }),
+    });
+
+    const outcomePromise = runDaemonShell(h.deps);
+    await entered; // the shell is now parked inside sleep
+    h.signal();
+
+    let guardTimer!: NodeJS.Timeout;
+    const guard = new Promise<never>((_, reject) => {
+      guardTimer = setTimeout(() => {
+        reject(new Error('shell never woke from sleep after the signal — abort pipeline missing'));
+      }, 2_000);
+    });
+    const outcome = await Promise.race([outcomePromise, guard]).finally(() => {
+      clearTimeout(guardTimer);
+    });
+
+    expect(outcome).toEqual({ reason: 'signal' });
+    // Exactly one round ran and exactly one sleep was entered — the shell
+    // exited at the loop top right after waking, it never slept again.
+    expect(h.calls.filter((c) => c.startsWith('sleep'))).toHaveLength(1);
     expect(h.unsubscribed()).toBe(true);
   });
 

@@ -72,8 +72,9 @@ export interface StartIo {
   readonly assemble: (config: BridgeConfig) => Promise<AssembledDaemon>;
   /** Production: `runDaemonShell`. */
   readonly runShell: (deps: ShellDeps) => Promise<ShellOutcome>;
-  /** The shell's sleep — production: a `setTimeout` promise. */
-  readonly sleep: (ms: number) => Promise<void>;
+  /** The shell's sleep — production: a `setTimeout` promise that resolves
+   *  early (clearing the timer) when `abort` fires (D-P5B13-1). */
+  readonly sleep: (ms: number, abort: AbortSignal) => Promise<void>;
   /** The shell's signal seam — production: SIGINT/SIGTERM listeners. */
   readonly onShutdownSignal: (fn: () => void) => () => void;
   /** The shell's log sink — production: `console.error`. */
@@ -221,9 +222,27 @@ export function buildRealStartIo(writer: Writer): StartIo {
     writer,
     assemble: (config) => assembleDaemon(config, buildProductionAssemblyBuilders()),
     runShell: runDaemonShell,
-    sleep: (ms) =>
+    // D-P5B13-1's interruptible sleep contract: never rejects; an abort
+    // resolves early and CLEARS the timer (a dangling handle would keep the
+    // event loop alive after shutdown; `unref()` is not an option because it
+    // would let the loop exit DURING a normal sleep). The abort listener is
+    // `{ once: true }` and removed again on the normal-timeout path, so
+    // neither side leaks.
+    sleep: (ms, abort) =>
       new Promise((resolve) => {
-        setTimeout(resolve, ms);
+        if (abort.aborted) {
+          resolve();
+          return;
+        }
+        const onAbort = (): void => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          abort.removeEventListener('abort', onAbort);
+          resolve();
+        }, ms);
+        abort.addEventListener('abort', onAbort, { once: true });
       }),
     onShutdownSignal: (fn) => {
       const handler = (): void => {

@@ -13,6 +13,7 @@ import { OutboxStore } from '../../src/store/outboxStore.js';
 import type { IncomingMail } from '../../src/transports/types.js';
 import { FakeAgentDriver } from '../helpers/fakeAgentDriver.js';
 import { FakeMailTransport, FAKE_MAILBOX, FAKE_UID_VALIDITY } from '../helpers/fakeTransport.js';
+import { withStdioSpy } from '../helpers/stdioSpy.js';
 
 // Guards D-P5B12-4 (the composition root): builder-call topology, config
 // field flow, credentials flowing into the transport builder AND NOWHERE
@@ -168,11 +169,19 @@ function commandMail(overrides: Partial<IncomingMail> = {}): IncomingMail {
 }
 
 describe('assembleDaemon (D-P5B12-4)', () => {
-  it('wires config through the builders: creds read from credentialsEnvFile flow into the transport builder and NOWHERE else', async () => {
+  it('wires config through the builders: creds read from credentialsEnvFile flow into the transport builder, NOWHERE else, and NEVER onto any stdio sink', async () => {
     const h = makeHarness();
     const config = baseConfig();
 
-    const assembled = await assembleDaemon(config, h.builders);
+    // D-P5B13-3: the whole assembly runs under the five-sink stdio spy —
+    // the batch-12 review named `assembleDaemon`'s own body (after the
+    // credentials leave `readCredentials`) as a raw-write channel no lint
+    // rule polices; this capture is its test floor.
+    const { result: assembled, captured } = await withStdioSpy(() =>
+      assembleDaemon(config, h.builders),
+    );
+    expect(captured).not.toContain(SENTINEL_USER);
+    expect(captured).not.toContain(SENTINEL_PASS);
 
     expect(h.calls.readCredentials).toEqual([config.credentialsEnvFile]);
     expect(h.calls.openDb).toEqual([config.dbPath]);

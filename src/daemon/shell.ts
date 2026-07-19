@@ -19,8 +19,10 @@
  * returns `{ reason: 'signal' }` without sleeping again. A second signal
  * does not accelerate anything (v0.1 simplification: there is no force-quit
  * path here; the operator's `kill -9` is the escalation). A signal arriving
- * during `sleep` is honored at the next loop top — worst case one poll
- * interval late, same latency bound as every other flag read.
+ * during `sleep` wakes it immediately (D-P5B13-1): each round's sleep gets
+ * a fresh `AbortController`'s signal, the shutdown handler aborts it, and
+ * the loop-top stop check exits right away — the current round always
+ * completes, but shutdown never waits out a poll interval.
  *
  * Tick error policy: a throw anywhere in a round ABORTS that round (the
  * remaining ticks are skipped — after an unexplained failure the cheapest
@@ -71,8 +73,11 @@ export interface ShellDeps {
   /** Injected `os.homedir()` (the `MailTickDeps.homeDir` precedent): the
    *  scrub needle for every log line this shell emits (red line 2). */
   homeDir: string;
-  /** Production binding: `setTimeout` promise (`src/cli/start.ts`). */
-  sleep(ms: number): Promise<void>;
+  /** Contract (D-P5B13-1): NEVER rejects; resolves early when `abort`
+   *  fires, and an already-aborted signal resolves immediately. Production
+   *  binding: a `setTimeout` promise whose abort listener clears the timer
+   *  (`src/cli/start.ts`). */
+  sleep(ms: number, abort: AbortSignal): Promise<void>;
   /** Registers a shutdown handler, returns the unsubscribe. Production
    *  binding: SIGINT/SIGTERM listeners (`src/cli/start.ts`). */
   onShutdownSignal(fn: () => void): () => void;
@@ -108,8 +113,14 @@ export async function runDaemonShell(deps: ShellDeps): Promise<ShellOutcome> {
   };
 
   let stopping = false;
+  // D-P5B13-1: the CURRENT sleep's controller (null outside sleep). The
+  // handler aborts it so a sleeping shell wakes immediately; aborting a
+  // controller whose sleep already resolved is a harmless no-op, and the
+  // loop-top `stopping` checks below stay the single exit decision.
+  let sleepController: AbortController | null = null;
   const unsubscribe = deps.onShutdownSignal(() => {
     stopping = true;
+    sleepController?.abort();
   });
 
   try {
@@ -168,7 +179,8 @@ export async function runDaemonShell(deps: ShellDeps): Promise<ShellOutcome> {
         // WITHOUT sleeping (graceful-stop contract, module doc comment).
         return { reason: 'signal' };
       }
-      await deps.sleep(deps.pollIntervalMs);
+      sleepController = new AbortController();
+      await deps.sleep(deps.pollIntervalMs, sleepController.signal);
     }
   } finally {
     unsubscribe();

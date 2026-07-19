@@ -100,7 +100,9 @@ export interface SetupIo {
 }
 
 export interface SetupResult {
-  readonly exitCode: 0 | 1;
+  /** D-P5B13-2: `2` = usage error (flag parsing), `1` = every runtime
+   *  failure (validation, hygiene, fs, database), `0` = success. */
+  readonly exitCode: 0 | 1 | 2;
   readonly messages: readonly string[];
 }
 
@@ -175,7 +177,9 @@ function parseSetupArgs(args: readonly string[]): ParseSetupArgsResult {
 export function runSetup(args: readonly string[], io: SetupIo, now: Date): SetupResult {
   const parsed = parseSetupArgs(args);
   if (!parsed.ok) {
-    return { exitCode: 1, messages: [`amb setup: ${parsed.message}`] };
+    // D-P5B13-2: usage errors exit 2 (the `runStart` convention); every
+    // runtime failure below keeps exiting 1.
+    return { exitCode: 2, messages: [`amb setup: ${parsed.message}`] };
   }
   const { flags } = parsed;
 

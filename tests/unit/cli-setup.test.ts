@@ -311,13 +311,13 @@ describe('runSetup (D-P5S-6)', () => {
     expect(handle?.open).toBe(false);
   });
 
-  it('reports invalid CLI arguments (unknown flag) without throwing, exit 1', () => {
+  it('reports invalid CLI arguments (unknown flag) without throwing, exit 2 (D-P5B13-2: usage errors = 2, runtime failures = 1)', () => {
     const io = makeIo();
 
     expect(() => runSetup(['--bogus-flag', 'x'], io, new Date('2026-07-18T12:00:00.000Z'))).not.toThrow();
     const result = runSetup(['--bogus-flag', 'x'], io, new Date('2026-07-18T12:00:00.000Z'));
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.messages.join('\n').length).toBeGreaterThan(0);
   });
 });

@@ -6,11 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RejectedDir } from '../../src/application/projectIndex.js';
 import type { Writer } from '../../src/cli/dispatch.js';
 import { resolveConfigPath } from '../../src/cli/paths.js';
-import { buildProductionAssemblyBuilders, runStart } from '../../src/cli/start.js';
+import { buildProductionAssemblyBuilders, buildRealStartIo, runStart } from '../../src/cli/start.js';
 import type { StartIo } from '../../src/cli/start.js';
 import type { AssembledDaemon } from '../../src/daemon/assembly.js';
 import type { ShellDeps, ShellOutcome } from '../../src/daemon/shell.js';
 import { buildImapflowFactory } from '../../src/transports/imapRead.js';
+import { withStdioSpy } from '../helpers/stdioSpy.js';
 
 // Guards D-P5B12-5's `amb start` half: loadConfig → assembleDaemon →
 // runDaemonShell wiring, the --dry-run config override, exit-code mapping
@@ -291,45 +292,29 @@ describe('buildProductionAssemblyBuilders — credentials stdio guard (red line 
   });
 
   it('readCredentials + buildTransport emit NOTHING carrying the credential values on any stdio channel (console.* AND raw process std streams)', async () => {
-    // Spy every sink `no-console` cannot police: src/cli/** is exempt from
-    // the rule entirely, and raw `process.std*.write` is invisible to it
-    // everywhere — exactly the review probes' two survival channels.
-    const consoleSpies = [
-      vi.spyOn(console, 'log').mockImplementation(() => undefined),
-      vi.spyOn(console, 'error').mockImplementation(() => undefined),
-      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
-    ];
-    const streamSpies = [
-      vi.spyOn(process.stdout, 'write').mockImplementation(() => true),
-      vi.spyOn(process.stderr, 'write').mockImplementation(() => true),
-    ];
-
-    let credentials: { user: string; pass: string };
-    let transportShape: string;
-    try {
+    // withStdioSpy (tests/helpers/stdioSpy.ts, extracted from this very
+    // guard by D-P5B13-3) spies every sink `no-console` cannot police:
+    // src/cli/** is exempt from the rule entirely, and raw
+    // `process.std*.write` is invisible to it everywhere — exactly the
+    // review probes' two survival channels. The spies are restored before
+    // the assertions run, so a failure prints normally.
+    const { result, captured } = await withStdioSpy(() => {
       const builders = buildProductionAssemblyBuilders();
-      credentials = builders.readCredentials(envPath);
+      const credentials = builders.readCredentials(envPath);
       const transport = builders.buildTransport({
         selfAddress: 'bridge-user@example.com',
         credentials,
         registerOutbox: () => Promise.resolve(),
       });
       // Constructed, never driven: no method is invoked on it.
-      transportShape = typeof transport.fetchSince;
-    } finally {
-      // Restore BEFORE assertions so a failure prints normally.
-      vi.restoreAllMocks();
-    }
+      return { credentials, transportShape: typeof transport.fetchSince };
+    });
 
-    expect(credentials).toEqual({ user: FIXTURE_USER, pass: FIXTURE_PASS });
-    expect(transportShape).toBe('function');
+    expect(result.credentials).toEqual({ user: FIXTURE_USER, pass: FIXTURE_PASS });
+    expect(result.transportShape).toBe('function');
 
-    const allOutput = [...consoleSpies, ...streamSpies]
-      .flatMap((spy) => spy.mock.calls.flat())
-      .map(String)
-      .join('\n');
-    expect(allOutput).not.toContain(FIXTURE_USER);
-    expect(allOutput).not.toContain(FIXTURE_PASS);
+    expect(captured).not.toContain(FIXTURE_USER);
+    expect(captured).not.toContain(FIXTURE_PASS);
   });
 
   it('the imapflow client the production factory builds is constructed with logger: false and no debug switch (batch-5 red-line-2 precedent), creds confined to auth', async () => {
@@ -349,5 +334,60 @@ describe('buildProductionAssemblyBuilders — credentials stdio guard (red line 
     expect(opts).not.toHaveProperty('debug');
     expect(opts?.secure).toBe(true);
     expect(opts?.auth).toEqual({ user: FIXTURE_USER, pass: FIXTURE_PASS });
+  });
+});
+
+// D-P5B13-1: the production sleep binding is the ONE real-timer piece of the
+// daemon loop, so its abort discipline is pinned here with fake timers —
+// building the io is pure binding (no signal listeners are registered until
+// onShutdownSignal is CALLED, which these tests never do).
+describe('buildRealStartIo — interruptible production sleep (D-P5B13-1)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('normal timeout path: resolves after ms and leaves ZERO timers behind (listener removed, nothing leaks)', async () => {
+    const io = buildRealStartIo(makeWriter());
+    const controller = new AbortController();
+    let resolved = false;
+    void io.sleep(30_000, controller.signal).then(() => {
+      resolved = true;
+    });
+
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(resolved).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('abort during sleep: resolves immediately AND clears the pending timer (no hanging handle keeps the loop alive)', async () => {
+    const io = buildRealStartIo(makeWriter());
+    const controller = new AbortController();
+    let resolved = false;
+    void io.sleep(30_000, controller.signal).then(() => {
+      resolved = true;
+    });
+    expect(vi.getTimerCount()).toBe(1);
+
+    controller.abort();
+    await Promise.resolve(); // the settled promise's .then runs on the microtask queue
+
+    expect(resolved).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('an ALREADY-aborted signal resolves immediately without ever creating a timer', async () => {
+    const io = buildRealStartIo(makeWriter());
+    const controller = new AbortController();
+    controller.abort();
+
+    await io.sleep(30_000, controller.signal);
+
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
