@@ -111,9 +111,12 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   `Message-ID` match — stored normalized precisely so the echo gate's key
   and the reconciliation key are the same key), and a mutation relaxing
   reconciliation to non-UNCERTAIN rows is likewise test-killed. Crash
-  windows that strand a SENDING row are recognized by the echo gate
-  (no command re-entry) but never converge — the startup sweep for them
-  is an explicit daemon-shell handoff item.
+  windows that strand a SENDING row now converge: the daemon shell runs
+  `sweepStrandedSending` at every startup (after intent crash recovery,
+  before the poll loop — order pinned by the startup-sequence test in
+  `tests/unit/daemon-shell.test.ts`), moving SENDING→UNCERTAIN so the
+  row rejoins the reconciliation track instead of sitting outside it
+  forever (SENT rows untouched, `tests/unit/daemon-ticks.test.ts`).
 - **C4 — Time fence.** `INTERNALDATE` ≥ persisted `readyAt` from first setup:
   a fresh install can never execute historical mail.
   *Evidence:* `BEFORE_READY` rejection + fail-closed `NO_READY_AT` when unset
@@ -270,7 +273,22 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   file is exactly mode 0600 in a 0700 directory via `stat` only — the file
   content is never read by the CLI (`src/cli/doctor.ts`,
   `tests/unit/cli-doctor.test.ts` incl. the setuid-bit case); gitleaks runs in
-  CI. Keychain storage itself is still the open ADR noted above.
+  CI. The daemon composition root reads the file at runtime fail-closed
+  (missing key ⇒ error naming the KEY only, never echoing values,
+  `src/daemon/assembly.ts`), and a five-sink stdio guard test pins that
+  running the production credentials + transport wiring emits neither user
+  nor password on `console.log/error/warn` or raw
+  `process.stdout/stderr.write` — review-injected leak probes at two
+  positions (a `console.error` inside the production transport builder and
+  a raw `stderr.write` inside the file reader) each turn exactly this one
+  test red (`tests/unit/cli-start.test.ts`, zero-connection: hoisted
+  `imapflow` mock also pins `logger === false`, no `debug`, `secure:
+  true`, creds reaching only the `auth` field). Known residual: the guard
+  wraps the CLI entry path; an equivalent five-sink spy around the
+  `assembleDaemon` body itself is a one-line follow-up (raw-stream writes
+  there are outside the lint fence). `amb status` reports the DB view only
+  and never echoes the mailbox address. Keychain storage itself is still
+  the open ADR noted above.
 
 ## 6. Explicit non-goals (v0.1)
 

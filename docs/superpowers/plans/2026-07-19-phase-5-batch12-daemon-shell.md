@@ -133,14 +133,14 @@ CLI：start 接线（假 assembly）；status 各计数与 paused 显示；pause
 `tests/integration/ingest-pipeline.test.ts`（真 registerer）; Test 并入既有
 + alreadyTold 直达例。
 
-- [ ] RED → GREEN → commit。
+- [x] RED → GREEN → commit。
 
 ### Task 2: shell + assembly
 
 **Files:** Create `src/daemon/shell.ts`、`src/daemon/assembly.ts`; Test
 `tests/unit/daemon-shell.test.ts`、`tests/unit/daemon-assembly.test.ts`。
 
-- [ ] RED → GREEN → commit。
+- [x] RED → GREEN → commit。
 
 ### Task 3: CLI 接线
 
@@ -148,13 +148,13 @@ CLI：start 接线（假 assembly）；status 各计数与 paused 显示；pause
 组织风格）; Modify `src/cli/dispatch.ts`、`src/cli/main.ts`; Test 沿 CLI
 测试先例。
 
-- [ ] RED → GREEN → commit。
+- [x] RED → GREEN → commit。
 
 ### Task 4: 批次收尾（编排者）
 
-- [ ] 四件套全绿；threat-model/architecture 刷新；完成记录 + 移交；
+- [x] 四件套全绿；threat-model/architecture 刷新；完成记录 + 移交；
   **E2E 请批文案**（红线 5：全链路真跑预估，模板沿批次六）落入最终报告；
-- [ ] commit + push。
+- [x] commit + push。
 
 ---
 
@@ -168,3 +168,62 @@ CLI：start 接线（假 assembly）；status 各计数与 paused 显示；pause
 - 红线：零真实连接零发信零额度（全假件）；creds 不入日志断言；status
   不打印地址（selfAddress 不回显——doc 注明红线 2 的显示面约束）。
 - 无占位符：每测试点具体。
+
+---
+
+## 完成记录（2026-07-19，批次十二收尾）
+
+### 提交清单
+
+| commit | 内容 |
+| --- | --- |
+| `8571c81` | 本 plan 落盘 |
+| `e93b7ee` | T1：config 扩展（projects/worktreesRoot/baseRef/pollIntervalSeconds 5..3600 默认 30）+ pause 旗标（meta 纯 KV，无 migration）+ `sweepStrandedSending`（SENDING→UNCERTAIN，SENT 不动）+ Minor 兑现（alreadyTold 直达双检测试、ingest 集成改真 `buildRegisterOutbox` 删分叉） |
+| `a8f08f5` | T2：`src/daemon/shell.ts`（启动序 recover→sweepStranded→循环、paused 跳过、信号优雅停、连续 3 败 fatal/成功清零、log 过 scrub）+ `src/daemon/assembly.ts`（组合根全注入、readCredentialsFile fail-closed 只报键名、close 逆序 driver→transport→db） |
+| `580fcc8` | T3：`amb start`（生产 builders + `--dry-run` 覆写、signal=0/fatal=1）、`amb status` 诚实 DB 视角（readyAt/paused/各表计数/水位，不回显地址）、`pause`/`resume`、PLACEHOLDER_COMMANDS 缩至 `['logout']` |
+| `afe90a2` | 修复轮：凭据 stdio 五 sink 守卫测试（Important-1）+ start.ts 自产日志过 scrub（Minor-1）+ getPausedChangedAt 显示（Minor-2）+ `IntentStore.countByStatus` 零填充（Minor-5） |
+| 本提交 | T4 收尾：threat-model C3 收口（stranded SENDING 启动清扫落地）+ C10 补 stdio 守卫证据、architecture 状态行、本记录 |
+
+测试 726 → **797**（+71），四件套全绿，全程零真实连接、零发信、零 codex 额度。
+
+### 审查故事（组合审查，钉在 8571c81..580fcc8 + 修复轮 580fcc8..afe90a2）
+
+- 首轮 **1 Important + 5 Minor**。Important-1（红线 2 机器可验缺口）：审查者在
+  exp 副本注入两根泄漏探针——`console.error(pass)` 于 src/cli/**（no-console
+  豁免区，lint 拦不住）与 `process.stderr.write(pass)`（任何目录 lint 都不拦）——
+  全套测试**零红存活**。修复 `afe90a2` 落五 sink spy 守卫（console.log/error/warn
+  + stdout/stderr.write），走真 `readCredentials` + 生产 `buildTransport`
+  （imapflow 文件级 hoisted mock，零连接；顺带钉死 `logger===false`、无
+  `debug`、`secure:true`、creds 只入 `auth`）。
+- 复核 **APPROVED**：双探针重放各**恰 1 红**且正是新守卫测试（1 failed |
+  791 passed）；改动面 7 文件与宣称吻合；主仓 792 passed + 5 skipped。
+- 复核记录的轻残余（不阻塞）：探针在 `assembleDaemon` 体内原位（readCredentials
+  返回后 raw `stderr.write`）仍存活——该位置 console.* 已被 no-console 拦，
+  残余仅剩 raw stream 一条非常规通道；修法一行（daemon-assembly.test.ts 任一
+  用例套同款五 sink spy 断言 SENTINEL 缺席），归下批。
+
+### 兑现的批次十一移交（七项中四项）
+
+#1 SENDING 清扫 ✓（T1）；#2 alreadyTold 直达测试 ✓（T1）；#3 集成测试真
+registerer ✓（T1）；#4 启动接线序 ✓（shell normative 序 + 测试 pin）。
+剩余：#5 ACK 异步语义（v0.1 同步派发不接，组装器已备）、#6 QUEUED_WINDOW
+复活（默认无时间窗不可达）、#7 真实 E2E（红线 5，收尾报告已附请批文案）。
+
+### 移交清单（后续批次）
+
+1. **assembleDaemon 五 sink spy 一行补测**（复核残余，见上）；
+2. **Minor-3 可中断 sleep**：生产 sleep 纯 setTimeout，SIGINT 在 sleep 中
+   到达最长等一个 poll 间隔（可配至 3600s）才退；模块 doc 已诚实声明 +
+   kill -9 兜底，v0.1 可受；
+3. **Minor-4 用法错误退出码统一**：`runStart` 非法参数退 2、`runSetup` 退 1
+   （测试 pin 死），同类错误两约定，建议统一为一（改 setup 侧需同步改测试）;
+4. **IDLE watch**（范围裁定明确排除项）：poll 30s 已满足 P95<60s，IDLE 是
+   延迟优化非正确性需求。
+
+### 经验沉淀
+
+- **lint 围栏不是泄漏证明**：no-console 有豁免区（src/cli/**），raw
+  `process.*.write` 任何区都不拦——红线 2 这类"绝不"性质的约束必须有
+  机器可验测试兜底，审查注入探针是检验"兜底是否真兜"的有效手段；
+- meta 表本就是纯 KV，pause 旗标零 migration 落地——动 schema 前先核对
+  现表机制（沿批次十一"outbox.message_id 本就 UNIQUE"同款教训）。
