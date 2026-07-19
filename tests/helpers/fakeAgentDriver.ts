@@ -228,9 +228,10 @@ export class FakeAgentDriver implements AgentDriver {
   /**
    * No real subprocess to release. Deliberately does NOT invalidate the
    * instance either: `startTask`/`resumeTask`/`streamEvents` keep working
-   * after `close()` — a real driver's `close` would almost certainly make
-   * further calls fail, so tests exercising "driver used after close"
-   * semantics need a hand-rolled stub, not this fake.
+   * after `close()` — the same semantics the real driver settled on
+   * (`src/drivers/codexDriver.ts`: close kills still-running subprocesses
+   * and releases them, but the instance stays usable and every buffered
+   * handle stays replayable).
    */
   close(): Promise<void> {
     return Promise.resolve();

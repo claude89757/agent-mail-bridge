@@ -271,8 +271,8 @@ describe('FakeAgentDriver (D-P3P-3 fake)', () => {
       await expect(driver.close()).resolves.toBeUndefined();
     });
 
-    // Pins the documented divergence from a real driver: this fake's close()
-    // does NOT invalidate the instance (see its doc comment).
+    // Pins that close() does NOT invalidate the instance (see its doc
+    // comment) — semantics the real CodexDriver holds too.
     it('does not invalidate the instance — startTask and streamEvents still work after close', async () => {
       const driver = new FakeAgentDriver([[COMPLETED_EVENT]]);
 

@@ -525,6 +525,65 @@ describe('createCodexDriver (D-P4B6-1..4, ADR-0004)', () => {
       expect(failure.errorText).not.toContain(realHome);
     });
 
+    it('scrubs cwd before home: a worktree nested under the home directory yields both placeholders', async () => {
+      // Pins the replacement ORDER the driver doc promises (cwd first):
+      // home-first would rewrite the nested cwd occurrence into
+      // "<home>/amb-fake-projects/wt-1/..." and the cwd needle would never
+      // match afterwards — the <cwd> assertion below trips exactly then.
+      const realHome = homedir();
+      const nestedCwd = `${realHome}/amb-fake-projects/wt-1`;
+      const harness = spawnHarness([
+        {
+          stdoutLines: [],
+          exitCode: 1,
+          stderrText:
+            `error: cannot write ${nestedCwd}/src/broken.ts\n` +
+            `rollout at ${realHome}/.codex/sessions/rollout-3.jsonl was rejected\n`,
+        },
+      ]);
+      const driver = createCodexDriver({ spawnCodex: harness.spawnCodex });
+
+      const handle = await driver.startTask(taskInput({ cwd: nestedCwd }));
+      const events = await collect(driver.streamEvents(handle));
+
+      const failure = expectFailed(events.at(-1));
+      expect(failure.errorText).toContain('<cwd>/src/broken.ts');
+      expect(failure.errorText).toContain('<home>/.codex/sessions/rollout-3.jsonl');
+      expect(failure.errorText).not.toContain(nestedCwd);
+      expect(failure.errorText).not.toContain(realHome);
+    });
+
+    it('scrubs before truncating: a path straddling the truncation boundary never leaks and the marker follows the placeholder', async () => {
+      // Pins the scrub-then-truncate ORDER: the raw cwd occurrence is placed
+      // so it STRADDLES the 400-char cap (padding puts its first char at
+      // index 390; the needle is >= 38 chars on any machine, so it crosses
+      // 400). If truncation ran FIRST, the bisected needle could no longer
+      // match and no <cwd> placeholder would appear — the presence
+      // assertion below is what bites then.
+      const realHome = homedir();
+      const deepCwd = `${realHome}/amb-fake-worktrees/task-straddle`;
+      const harness = spawnHarness([
+        {
+          stdoutLines: [],
+          exitCode: 1,
+          stderrText: `${'y'.repeat(389)} ${deepCwd}/src/leak.ts end\n`,
+        },
+      ]);
+      const driver = createCodexDriver({ spawnCodex: harness.spawnCodex });
+
+      const handle = await driver.startTask(taskInput({ cwd: deepCwd }));
+      const events = await collect(driver.streamEvents(handle));
+
+      const failure = expectFailed(events.at(-1));
+      expect(failure.errorText).toContain('<cwd>');
+      expect(failure.errorText).not.toContain(deepCwd);
+      expect(failure.errorText).not.toContain(realHome);
+      expect(failure.errorText.endsWith('[stderr truncated]')).toBe(true);
+      expect(failure.errorText.indexOf('<cwd>')).toBeLessThan(
+        failure.errorText.indexOf('[stderr truncated]'),
+      );
+    });
+
     it('truncates an oversized stderr summary', async () => {
       const harness = spawnHarness([
         { stdoutLines: [], exitCode: 1, stderrText: 'x'.repeat(1000) },
@@ -626,6 +685,39 @@ describe('createCodexDriver (D-P4B6-1..4, ADR-0004)', () => {
       expect(events).toEqual(HAPPY_EVENTS);
     });
 
+    it('resolves a value-looked-up handle to the LATEST task when resume re-emits the same thread id (latest wins)', async () => {
+      // ADR-0004 evidence 2: resume re-emits the SAME thread_id, so one id
+      // can name several tasks over time. The doc promises the sessionId
+      // index points at the MOST RECENT one while identity lookup still
+      // reaches the older tasks — this pins both halves.
+      const harness = spawnHarness([
+        {
+          stdoutLines: [THREAD_STARTED_LINE, agentMessageLine('first run answer'), TURN_COMPLETED_LINE],
+          exitCode: 0,
+        },
+        {
+          stdoutLines: [THREAD_STARTED_LINE, agentMessageLine('second run answer'), TURN_COMPLETED_LINE],
+          exitCode: 0,
+        },
+      ]);
+      const driver = createCodexDriver({ spawnCodex: harness.spawnCodex });
+
+      const firstHandle = await driver.startTask(taskInput());
+      await driver.resumeTask(THREAD_ID, taskInput({ prompt: 'continue the task' }));
+
+      const latestEvents = await collect(driver.streamEvents({ sessionId: THREAD_ID }));
+      expect(latestEvents).toEqual([
+        { kind: 'agent-message', text: 'second run answer' },
+        { kind: 'completed', resultText: 'second run answer' },
+      ]);
+
+      const firstEvents = await collect(driver.streamEvents(firstHandle));
+      expect(firstEvents).toEqual([
+        { kind: 'agent-message', text: 'first run answer' },
+        { kind: 'completed', resultText: 'first run answer' },
+      ]);
+    });
+
     it('throws synchronously for a handle this instance never issued', async () => {
       const harness = spawnHarness([HAPPY_SCRIPT]);
       const driver = createCodexDriver({ spawnCodex: harness.spawnCodex });
@@ -673,6 +765,20 @@ describe('createCodexDriver (D-P4B6-1..4, ADR-0004)', () => {
       const driver = createCodexDriver({ spawnCodex: harness.spawnCodex });
 
       await expect(driver.close()).resolves.toBeUndefined();
+    });
+
+    it('does not freeze the instance: startTask after close runs a full stream (the fake pin, held by the real driver)', async () => {
+      const harness = spawnHarness([HAPPY_SCRIPT, HAPPY_SCRIPT]);
+      const driver = createCodexDriver({ spawnCodex: harness.spawnCodex });
+      const beforeClose = await driver.startTask(taskInput());
+      await expect(collect(driver.streamEvents(beforeClose))).resolves.toEqual(HAPPY_EVENTS);
+
+      await driver.close();
+
+      const afterClose = await driver.startTask(taskInput({ prompt: 'post-close task' }));
+      const events = await collect(driver.streamEvents(afterClose));
+      expect(afterClose.sessionId).toBe(THREAD_ID);
+      expect(events).toEqual(HAPPY_EVENTS);
     });
   });
 });
