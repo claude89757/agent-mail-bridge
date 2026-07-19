@@ -149,23 +149,84 @@ export function composeAckReply(ctx: ReplyContext, info: {
 **Files:** Create `src/domain/replyComposition.ts`（scrubText/常量/内部截断
 helpers）; Test `tests/unit/reply-composition.test.ts`（scrub/cap 部分）。
 
-- [ ] 失败测试先行（D-P4B9-4 前三组）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] 失败测试先行（D-P4B9-4 前三组）。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 2: 四组装器
 
 **Files:** Modify `src/domain/replyComposition.ts`; Test 同文件追加。
 
-- [ ] 失败测试先行（D-P4B9-4 组装器组）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] 失败测试先行（D-P4B9-4 组装器组）。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 3: 批次收尾
 
-- [ ] 四件套全绿；threat-model C9 渲染半边翻证据（金丝雀 + 双层防御
+- [x] 四件套全绿；threat-model C9 渲染半边翻证据（金丝雀 + 双层防御
   描述）；architecture 表新增回信组装行、not-started 行刷新；完成记录
   （移交说明：daemon 接线 outcome→compose→transport.send 与 ACK 开关、
   In-Reply-To 扩键是显式传输层决策、澄清组装等走查）；
-- [ ] commit + push。
+- [x] commit + push。
+
+---
+
+## 完成记录（2026-07-19）
+
+三任务 + 一轮审查修复闭环。测试基线 31 文件 / 605 → **32 文件 / 649**
+（+44：T1 scrub/cap 21、T2 组装器 20、审查修复 +3；645 通过 + 4 live
+默认 skip）；四件套全绿；零 IO、零发信、零新依赖。批次六/八连续置顶的
+C9 渲染 scrub 义务就此闭环。
+
+### Commit 轨迹
+
+| Commit | 内容 |
+| --- | --- |
+| `f15969a` | 本计划落盘 |
+| `be0c82c` | T1 scrubText + caps（路径占位 → 关键词遮值 → 长 token 固定次序；scrub 先于截断；幂等） |
+| `7e028fc` | T2 四组装器（RESULT/ERROR/dry-run/ACK → 已脱敏 OutboundMail；CLARIFY 候选只渲染 name） |
+| `d9265ff` | 审查修复：主题**先单行化再 scrub**（I-1）+ needle 尾斜杠归一（M-1）+ verdictKind 类型收窄（M-2） |
+| 本提交 | T3 收尾：threat-model C9 渲染半边翻证据 + 残余说明、architecture 表、完成记录 |
+
+### 审查结论
+
+初审 **NEEDS_FIXES（1 Important + 4 Minor）**，修复后按审查员明示免复审。
+审查规模为九批之最：44 组对抗探针（尾斜杠/大小写/路径嵌长 token/主题
+换行胶合攻击/越权候选 path/漏斗逐条）、20k 种子幂等 fuzz、ReDoS 计时
+（1MB < 250ms）、正则 lastIndex 状态检查、编译钉三连实证（TS2741/TS2322
++ narrow 方向）、5/5 变异抽验击杀。
+
+**I-1（计划级缺口，教训归档）**：计划 D-P4B9-3 原文的「过 scrubText +
+单行化」次序放行了换行胶合攻击——`password:\n值` 形主题在 scrub 时因
+关键词规则的换行守卫不咬，随后单行化把键值胶合回一行进入
+`subjectRedacted`。修复把单行化挪到 scrub 前（严格更安全：胶合只多咬
+不漏咬，空格拼不出路径 needle），回归测试经 M13 次序变异精确击杀
+（1 failed | 43 passed）。**漏斗次序普适教训：归一化必须先于遮盖**——
+后续任何脱敏漏斗（澄清邮件组装等）沿用此序。
+
+### Minor 处置
+
+- M-1 needle 尾斜杠归一：已修（含 `///` 退化为空被守卫弃用的测试）；
+- M-2 metaLines verdictKind 收窄为 `RouteVerdict['kind'] | null`：已修
+  （类型系统而非运行时 scrub 是这条线的防线，doc 注明）；
+- M-3 大小写变体路径存活：**接受**——事件路径源自 bridge 自己传入的
+  cwd（字节一致），刻意变体属对抗规避，超出启发式地板定位；残余说明
+  已写入 threat-model C9；
+- M-4 结构钉抓不到 OutboundMail 删字段（结构子类型允许多余属性）：
+  良性方向，记录在案。
+
+### 移交说明
+
+1. **daemon 接线**：outcome→compose→`transport.send` 的编排 +
+   `ScrubContext` 构造（worktreePath 取 session 行持久值、homeDir 注入
+   `os.homedir()`——needle 尾斜杠已归一但仍应传规范形）+ ACK 是否发送
+   的配置开关（组装器已备好，发不发是 daemon 的策略位）。
+2. **In-Reply-To 线程头**：SmtpMessage 六键是 C9 机械锁，扩键（线程化
+   回信，ADR-0002 已实测 X-GM-THRID 语义）是传输层显式 schema 决策，
+   需专门批次带测试解锁，勿顺手加。
+3. **澄清邮件组装**（含 CLARIFY_NO_MATCH 的"列全部项目"候选组装 +
+   token/记录随 outbox 事务）仍等真机走查；届时脱敏漏斗沿用本模块
+   scrubText 与「归一化先于遮盖」次序。
+4. **kind='CLARIFICATION' 的组装器**不存在是刻意的（ComposedReplyKind
+   窄集不含它）——澄清批次新增时同步扩集。
 
 ---
 

@@ -213,15 +213,32 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   (`src/transports/imapRead.ts`, `tests/unit/imap-read-transport.test.ts`);
   CRLF header injection is neutralized by nodemailer's header encoding
   (review-verified at 9.0.3, documented at `buildDefaultSmtpSend`).
-  Size caps and content redaction remain the reply-composition batch's
-  scope — and that batch inherits one NON-OPTIONAL obligation (batch-6
-  review finding): `CodexDriver` scrubs local paths from its synthesized
-  `failed` errorText only; `agent-message` text and `tool-activity`
-  summaries flow through UNSCRUBBED by design (the agent talks about real
-  worktree files). The reply-composition layer MUST apply cwd/home
-  scrubbing to ALL driver-event text before any of it enters a mail body,
-  with tests — otherwise red line 2 fails silently at the first status
-  reply.
+  The rendering half — the NON-OPTIONAL obligation carried since the
+  batch-6 review (`CodexDriver` scrubs only its synthesized `failed`
+  errorText; `agent-message`/`tool-activity` text flows through UNSCRUBBED
+  by design) — is now implemented and pinned
+  (`src/domain/replyComposition.ts`, `tests/unit/reply-composition.test.ts`):
+  every composer routes ALL driver-event text, terminal text, failure
+  reasons, and the subject line through one scrub funnel (worktree/home
+  literals → `<cwd>`/`<home>` placeholders, then keyword-value masking,
+  then a ≥48-char token heuristic — order pinned by tests because
+  reversing it tears paths into recoverable fragments), normalizes the
+  subject to a single line BEFORE scrubbing (the review's adversarial
+  probe showed newline-glue could otherwise rebuild a `password:\nvalue`
+  pair — the funnel lesson: normalize before masking), size-caps with
+  scrub-before-truncate (a secret straddling the cut line can not
+  survive as a fragment), and never renders project PATHS at all in
+  clarification candidate lists (pinned as "don't render", independent
+  of scrubbing). Leak canaries are mutation-verified layer by layer
+  (13 kills across implementer + reviewer, 44 adversarial probes, a
+  20k-seed idempotency fuzz, and ReDoS timing checks). Honest residuals,
+  documented in the module: the secret heuristics are a FLOOR not a
+  guarantee, large-diff redaction is implemented as capping (no diff
+  syntax detection), and path masking is literal and case-sensitive — a
+  deliberately case-mangled path would survive, accepted because event
+  paths originate from the bridge's own byte-identical cwd argument and
+  the mail's only recipient is the operator themselves. Send wiring
+  (outcome → compose → transport) is the daemon batch's.
 - **C10 — Credential hygiene.** App password in the OS keychain (macOS;
   Linux story tracked as an open question), never in git/logs/replies; public
   repo enforces secret scanning in CI from day one.
