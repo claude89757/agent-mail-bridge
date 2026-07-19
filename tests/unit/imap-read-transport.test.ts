@@ -8,9 +8,15 @@ import type {
   FetchedMessage,
   ImapClientFactory,
   ImapClientLike,
+  SmtpMessage,
 } from '../../src/transports/imapRead.js';
 import { UidValidityChangedError } from '../../src/transports/errors.js';
-import type { IncomingMail, OutboundMail } from '../../src/transports/types.js';
+import type {
+  IncomingMail,
+  MailTransport,
+  OutboundMail,
+  SendReceipt,
+} from '../../src/transports/types.js';
 
 // Guards D-P3B2-2/D-P3B2-3 (docs/superpowers/plans/2026-07-19-phase-3-batch2-imap-read-path.md):
 // the first real MailTransport implementation, driven entirely through a
@@ -24,6 +30,20 @@ import type { IncomingMail, OutboundMail } from '../../src/transports/types.js';
 const MAILBOX = 'INBOX';
 const UIDVALIDITY = '1690000000';
 const UIDVALIDITY_BIGINT = 1690000000n;
+
+/** The bridge's own address for send-half tests (placeholder, public-repo
+ *  rule). */
+const SELF_ADDRESS = 'bridge-user@example.com';
+
+/** Fixed outbox id injected via `mintOutboxId` for deterministic receipts.
+ *  Deliberately LOW-entropy (`Aa-…-0001` style, never a real UUID): a
+ *  high-entropy fixture string would trip the CI gitleaks scan (AGENTS.md
+ *  test-credential discipline). */
+const FIXED_OUTBOX_ID = 'Aa-Aa-Out-0001';
+
+/** The Message-ID `send` must mint for {@link FIXED_OUTBOX_ID}:
+ *  `<amb-<outboxId>@agent-mail-bridge.invalid>` (D-P3B5-2 clause 3). */
+const FIXED_MESSAGE_ID = '<amb-Aa-Aa-Out-0001@agent-mail-bridge.invalid>';
 
 /** One entry in a scripted fake's call log, in call order. Distinguishing
  *  `messageFlagsAdd`'s IMAP-uid-vs-flags-vs-opts fields by name (`uidOpt`
@@ -133,6 +153,45 @@ function incomingMailFixture(overrides: Partial<IncomingMail> = {}): IncomingMai
 
 function outboundMailFixture(): OutboundMail {
   return { kind: 'ACK', commandId: null, subjectRedacted: '[redacted]', bodyRedacted: '[redacted]' };
+}
+
+/** What `createSendHarness` captures from one send-configured transport. */
+interface SendHarness {
+  transport: MailTransport;
+  /** `'register'` / `'smtp'` entries in actual call order — the C3 order
+   *  invariant (D-P3B5-2 clause 1) is asserted against this log. */
+  events: Array<'register' | 'smtp'>;
+  /** Every `SmtpMessage` the fake smtpSend captured, in call order. */
+  smtpMessages: SmtpMessage[];
+  /** Every (receipt, mail) pair registerOutbox captured, in call order. */
+  registrations: Array<{ receipt: SendReceipt; mail: OutboundMail }>;
+}
+
+/** Builds a send-configured transport over an exploding IMAP factory
+ *  (proving `send` touches zero IMAP client state), with capturing fakes
+ *  and a fixed `mintOutboxId`. Failure-path tests (a dep that throws)
+ *  build their own logging fakes inline instead of taking overrides here,
+ *  so each test's event log provably comes from the exact fakes it wired. */
+function createSendHarness(): SendHarness {
+  const events: Array<'register' | 'smtp'> = [];
+  const smtpMessages: SmtpMessage[] = [];
+  const registrations: Array<{ receipt: SendReceipt; mail: OutboundMail }> = [];
+  const transport = createImapReadTransport({
+    factory: createExplodingFactory(),
+    send: {
+      selfAddress: SELF_ADDRESS,
+      smtpSend: async (message) => {
+        events.push('smtp');
+        smtpMessages.push(message);
+      },
+      registerOutbox: async (receipt, mail) => {
+        events.push('register');
+        registrations.push({ receipt, mail });
+      },
+      mintOutboxId: () => FIXED_OUTBOX_ID,
+    },
+  });
+  return { transport, events, smtpMessages, registrations };
 }
 
 describe('createImapReadTransport (D-P3B2-2/3)', () => {
@@ -490,12 +549,173 @@ describe('createImapReadTransport (D-P3B2-2/3)', () => {
   });
 
   describe('send', () => {
-    it('rejects with the explicit not-implemented message and never touches a client', async () => {
+    it('rejects with the explicit not-implemented message and never touches a client when send deps are not configured', async () => {
       const transport = createImapReadTransport({ factory: createExplodingFactory() });
 
       await expect(transport.send(outboundMailFixture())).rejects.toThrow(
         'ImapReadTransport: send not implemented — awaits red-line-3 confirmation (SMTP batch)',
       );
+    });
+
+    // D-P3B5-2 clause 1 (C3 order invariant, happy path).
+    it('mints, registers, then submits — awaiting registerOutbox strictly before smtpSend, and resolves the exact receipt', async () => {
+      const harness = createSendHarness();
+      const mail = outboundMailFixture();
+
+      const receipt = await harness.transport.send(mail);
+
+      expect(receipt).toEqual({ outboxId: FIXED_OUTBOX_ID, messageId: FIXED_MESSAGE_ID });
+      expect(harness.events).toEqual(['register', 'smtp']);
+      expect(harness.registrations).toHaveLength(1);
+      expect(harness.registrations[0]?.receipt).toEqual(receipt);
+      expect(harness.registrations[0]?.mail).toBe(mail);
+    });
+
+    // D-P3B5-2 clause 1 (register failure: better not to send at all than
+    // to send mail no outbox row remembers).
+    it('rejects with the registerOutbox error and NEVER calls smtpSend when registration throws', async () => {
+      const events: Array<'register' | 'smtp'> = [];
+      const boom = new Error('registerOutbox exploded');
+      const transport = createImapReadTransport({
+        factory: createExplodingFactory(),
+        send: {
+          selfAddress: SELF_ADDRESS,
+          smtpSend: async () => {
+            events.push('smtp');
+          },
+          registerOutbox: async () => {
+            events.push('register');
+            throw boom;
+          },
+          mintOutboxId: () => FIXED_OUTBOX_ID,
+        },
+      });
+
+      await expect(transport.send(outboundMailFixture())).rejects.toBe(boom);
+      expect(events).toEqual(['register']);
+    });
+
+    // D-P3B5-2 clause 1 (smtp failure: the row is already registered; the
+    // rejection propagates as-is and reconciliation is the daemon batch's
+    // outbox UNCERTAIN path).
+    it('rejects with the original smtpSend error while the outbox row is already registered', async () => {
+      const events: Array<'register' | 'smtp'> = [];
+      const registrations: Array<{ receipt: SendReceipt; mail: OutboundMail }> = [];
+      const boom = new Error('smtp submission exploded');
+      const transport = createImapReadTransport({
+        factory: createExplodingFactory(),
+        send: {
+          selfAddress: SELF_ADDRESS,
+          smtpSend: async () => {
+            events.push('smtp');
+            throw boom;
+          },
+          registerOutbox: async (receipt, mail) => {
+            events.push('register');
+            registrations.push({ receipt, mail });
+          },
+          mintOutboxId: () => FIXED_OUTBOX_ID,
+        },
+      });
+
+      await expect(transport.send(outboundMailFixture())).rejects.toBe(boom);
+      expect(events).toEqual(['register', 'smtp']);
+      expect(registrations[0]?.receipt).toEqual({
+        outboxId: FIXED_OUTBOX_ID,
+        messageId: FIXED_MESSAGE_ID,
+      });
+    });
+
+    // D-P3B5-2 clause 2 (C9): the recipient is mechanically locked, and the
+    // submitted message has EXACTLY the six SmtpMessage keys — a future
+    // cc/bcc/replyTo (or any other field) shows up in this sorted key list
+    // and turns the test red before it can widen where mail might go.
+    it('locks to === from === selfAddress and submits EXACTLY the six SmtpMessage keys', async () => {
+      const harness = createSendHarness();
+
+      await harness.transport.send(outboundMailFixture());
+
+      const message = harness.smtpMessages[0];
+      expect(message?.to).toBe(SELF_ADDRESS);
+      expect(message?.from).toBe(SELF_ADDRESS);
+      expect(Object.keys(message ?? {}).sort()).toEqual([
+        'from',
+        'headers',
+        'messageId',
+        'subject',
+        'text',
+        'to',
+      ]);
+    });
+
+    // D-P3B5-2 clause 3 (loop markers): headers carry exactly the
+    // X-AMB-Outbox-ID key, and the minted Message-ID is receipt-identical
+    // on the RFC 2606 reserved domain.
+    it('stamps headers as exactly {X-AMB-Outbox-ID: outboxId} and a receipt-identical @agent-mail-bridge.invalid Message-ID', async () => {
+      const harness = createSendHarness();
+
+      const receipt = await harness.transport.send(outboundMailFixture());
+
+      const message = harness.smtpMessages[0];
+      expect(Object.keys(message?.headers ?? {})).toEqual(['X-AMB-Outbox-ID']);
+      expect(message?.headers['X-AMB-Outbox-ID']).toBe(FIXED_OUTBOX_ID);
+      expect(message?.messageId).toBe(FIXED_MESSAGE_ID);
+      expect(receipt.messageId).toBe(FIXED_MESSAGE_ID);
+    });
+
+    // D-P3B5-2 clause 4: transport adds no prefix/suffix — redaction is the
+    // upstream producer's job, and what it produced goes out byte-for-byte.
+    it('passes subjectRedacted/bodyRedacted through byte-for-byte, whitespace and all', async () => {
+      const harness = createSendHarness();
+      const mail: OutboundMail = {
+        kind: 'RESULT',
+        commandId: 7,
+        subjectRedacted: '  Re: run finished  ',
+        bodyRedacted: 'line one\r\n\tline two\nline three ',
+      };
+
+      await harness.transport.send(mail);
+
+      expect(harness.smtpMessages[0]?.subject).toBe('  Re: run finished  ');
+      expect(harness.smtpMessages[0]?.text).toBe('line one\r\n\tline two\nline three ');
+    });
+
+    // D-P3B5-1: mintOutboxId defaults to crypto.randomUUID.
+    it('defaults mintOutboxId to crypto.randomUUID: two sends mint two distinct RFC 4122 ids', async () => {
+      const transport = createImapReadTransport({
+        factory: createExplodingFactory(),
+        send: {
+          selfAddress: SELF_ADDRESS,
+          smtpSend: async () => {},
+          registerOutbox: async () => {},
+        },
+      });
+
+      const first = await transport.send(outboundMailFixture());
+      const second = await transport.send(outboundMailFixture());
+
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+      expect(first.outboxId).toMatch(uuidPattern);
+      expect(second.outboxId).toMatch(uuidPattern);
+      expect(first.outboxId).not.toBe(second.outboxId);
+      expect(first.messageId).toBe(`<amb-${first.outboxId}@agent-mail-bridge.invalid>`);
+    });
+
+    // D-P3B5-2 clause 5 (identity.ts blank-guard precedent): a blank
+    // selfAddress must fail at CONSTRUCTION, never survive to send time.
+    it('throws at construction when selfAddress is blank or all-whitespace', () => {
+      for (const blank of ['', '   ', '\t\n']) {
+        expect(() =>
+          createImapReadTransport({
+            factory: createExplodingFactory(),
+            send: {
+              selfAddress: blank,
+              smtpSend: async () => {},
+              registerOutbox: async () => {},
+            },
+          }),
+        ).toThrow('ImapReadTransport: send.selfAddress must not be blank');
+      }
     });
   });
 

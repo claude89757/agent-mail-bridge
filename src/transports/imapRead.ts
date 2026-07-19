@@ -8,20 +8,27 @@
  * alone; specific findings are cited inline below).
  *
  * LAYERING (D-P3B2-5): this file, inside `src/transports/**`, is the ONLY
- * place in the source tree allowed to import `imapflow`. `domain/`,
- * `application/`, and `store/` never see it, directly or transitively —
- * they only ever see the `MailTransport` seam.
+ * place in the source tree allowed to import `imapflow` — and, since the
+ * batch-5 send half, `nodemailer`. `domain/`, `application/`, and `store/`
+ * never see either, directly or transitively — they only ever see the
+ * `MailTransport` seam.
  *
- * `send` is NOT implemented here (fails loud, see below): live send
- * verification awaits red-line-3 confirmation and belongs to a future SMTP
- * batch. IDLE/long-lived connections belong to the daemon batch. Both are
- * out of scope per the plan's explicit exclusions.
+ * `send` (D-P3B5-1/2): real SMTP submission via the optional send deps
+ * (`ImapReadTransportSendDeps` below; production wiring is
+ * `buildDefaultSmtpSend`, nodemailer over Gmail implicit-TLS 465, per
+ * ADR-0002's measured send half). A transport constructed WITHOUT send deps
+ * — every read-only construction — keeps the exact pre-batch loud failure.
+ * IDLE/long-lived connections and outbox retry/reconciliation belong to the
+ * daemon batch, out of scope per the plan's explicit exclusions.
  */
+import { randomUUID } from 'node:crypto';
+
 import { ImapFlow } from 'imapflow';
+import nodemailer from 'nodemailer';
 
 import { filterNewUids } from '../domain/uid.js';
 import { UidValidityChangedError } from './errors.js';
-import type { IncomingMail, MailTransport, SendReceipt } from './types.js';
+import type { IncomingMail, MailTransport, OutboundMail, SendReceipt } from './types.js';
 
 /* ------------------------------------------------------------------ */
 /* ImapClientLike surface (D-P3B2-2)                                   */
@@ -376,6 +383,89 @@ function mapFetchedMessage(
 }
 
 /* ------------------------------------------------------------------ */
+/* SMTP send surface (D-P3B5-1)                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The minimal SMTP submission surface `send` needs (D-P3B5-1): production
+ * is `buildDefaultSmtpSend`'s nodemailer wrapper at the bottom of this
+ * file; unit tests inject a capturing fake and never open a network
+ * connection.
+ *
+ * EXACTLY these six keys, nothing more — no cc, no bcc, no replyTo. The
+ * shape is load-bearing for security control C9 ("recipient mechanically
+ * locked to self"): `send` always sets `to === from === selfAddress`, and
+ * the unit tests assert the captured message's sorted key set is EXACTLY
+ * these six — any future field added here (or stamped on in `send`) turns
+ * a test red before it can widen where mail might go.
+ */
+export interface SmtpMessage {
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+  /** Self-minted RFC 5322 Message-ID, angle brackets included. */
+  messageId: string;
+  /** Exactly one key: `X-AMB-Outbox-ID` (loop-prevention marker, C3). */
+  headers: Record<string, string>;
+}
+
+export type SmtpSend = (message: SmtpMessage) => Promise<void>;
+
+/**
+ * Optional send-half dependencies for `createImapReadTransport`
+ * (D-P3B5-1). Omitted entirely → the transport stays read-only and `send`
+ * fails loud exactly as it did before this batch (zero read-side behavior
+ * change).
+ */
+export interface ImapReadTransportSendDeps {
+  /**
+   * The bridge's own mailbox address — the ONLY value `send` ever places in
+   * `from`/`to` (C9); `OutboundMail` itself carries no recipient field, so
+   * there is no other source a recipient could even come from. Trimmed at
+   * construction; blank throws there (same fail-closed whitespace guard as
+   * `checkIdentityC1`'s selfAddress precedent in `src/domain/identity.ts`
+   * — a blank address must fail loudly at wiring time, never become an
+   * addressing target).
+   */
+  selfAddress: string;
+  smtpSend: SmtpSend;
+  /**
+   * Persists the outbox row for a receipt. Awaited strictly BEFORE
+   * `smtpSend` is invoked (C3 order invariant — see `send`'s doc comment).
+   */
+  registerOutbox: (receipt: SendReceipt, mail: OutboundMail) => Promise<void>;
+  /** Outbox-id mint; defaults to `crypto.randomUUID`. Tests inject a fixed
+   *  value for deterministic receipts. */
+  mintOutboxId?: () => string;
+}
+
+/** {@link ImapReadTransportSendDeps} after construction-time validation:
+ *  `selfAddress` trimmed and known non-blank, `mintOutboxId` defaulted. */
+interface ResolvedSendDeps {
+  selfAddress: string;
+  smtpSend: SmtpSend;
+  registerOutbox: (receipt: SendReceipt, mail: OutboundMail) => Promise<void>;
+  mintOutboxId: () => string;
+}
+
+/** Construction-time validation for the send half (D-P3B5-2 clause 5):
+ *  a blank/all-whitespace `selfAddress` throws HERE, at wiring time —
+ *  never surviving to send time as an empty recipient. */
+function resolveSendDeps(deps: ImapReadTransportSendDeps): ResolvedSendDeps {
+  const selfAddress = deps.selfAddress.trim();
+  if (selfAddress.length === 0) {
+    throw new Error('ImapReadTransport: send.selfAddress must not be blank');
+  }
+  return {
+    selfAddress,
+    smtpSend: deps.smtpSend,
+    registerOutbox: deps.registerOutbox,
+    mintOutboxId: deps.mintOutboxId ?? randomUUID,
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* MailTransport implementation                                        */
 /* ------------------------------------------------------------------ */
 
@@ -391,8 +481,16 @@ function mapFetchedMessage(
  * no-op (see below) — there is never a standing connection for it to tear
  * down.
  */
-export function createImapReadTransport(opts: { factory: ImapClientFactory }): MailTransport {
+export function createImapReadTransport(opts: {
+  factory: ImapClientFactory;
+  /** Optional send half (D-P3B5-1). Omitted → read-only transport whose
+   *  `send` fails loud (see `send` below). */
+  send?: ImapReadTransportSendDeps;
+}): MailTransport {
   const { factory } = opts;
+  // Validated at CONSTRUCTION, not first send: a blank selfAddress is a
+  // wiring bug and must surface before any mail could be involved.
+  const sendDeps = opts.send === undefined ? undefined : resolveSendDeps(opts.send);
 
   return {
     async fetchSince(
@@ -458,20 +556,64 @@ export function createImapReadTransport(opts: { factory: ImapClientFactory }): M
       }
     },
 
-    // Fails LOUD, never silent (D-P3B2-2): this is a read transport: `send`
-    // awaits red-line-3 confirmation before any SMTP work begins. Declared
-    // with no parameter (rather than an unused `mail: OutboundMail`) —
-    // TypeScript's standard "a function may declare fewer parameters than
-    // the interface it implements" leniency covers this, and it avoids an
-    // unused-variable lint violation for a parameter this stub can never
-    // use. `async` (not a bare `throw`) is required so the throw becomes a
-    // proper Promise rejection rather than a synchronous throw at the call
-    // site — every other MailTransport method only ever fails via
-    // rejection, never a synchronous throw, and callers rely on that.
-    async send(): Promise<SendReceipt> {
-      throw new Error(
-        'ImapReadTransport: send not implemented — awaits red-line-3 confirmation (SMTP batch)',
-      );
+    /**
+     * Real SMTP send (D-P3B5-2) when send deps are configured. Without
+     * them (every read-only construction) it keeps failing LOUD, never
+     * silent, with the byte-identical pre-batch message — the text is
+     * deliberately frozen ("same loud failure", D-P3B5-1): existing tests
+     * pin it, and rewording it is not this batch's call. `async` (not a
+     * bare `throw`) keeps the failure a proper Promise rejection — every
+     * MailTransport method only ever fails via rejection, and callers rely
+     * on that.
+     *
+     * ORDER INVARIANT (C3, load-bearing): mint `outboxId` → mint
+     * `messageId` → AWAIT `registerOutbox` (outbox row recorded) →
+     * `smtpSend` → resolve the receipt. `registerOutbox` rejecting means
+     * `smtpSend` is NEVER reached — better to not send at all than to send
+     * mail no outbox row remembers (an unrecorded send would blind the C3
+     * echo gate and the bridge would re-ingest its own mail as a fresh
+     * command). This is exactly the real-order contract
+     * `tests/helpers/fakeTransport.ts#send` documents itself as mirroring.
+     * A `smtpSend` rejection, by contrast, propagates AS-IS with the row
+     * already registered: whether the server actually accepted that
+     * submission is unknowable here, and reconciling such UNCERTAIN rows
+     * is the daemon batch's outbox job, not this method's.
+     *
+     * Message-ID: `<amb-<outboxId>@agent-mail-bridge.invalid>`, on RFC
+     * 2606's reserved `.invalid` TLD (never routable, never anyone's real
+     * domain). ADR-0002 (docs/adr/0002-p0-1-gmail-imap-smtp-go.md, send
+     * half) measured Gmail preserving sender-supplied Message-IDs on a
+     * custom `.invalid` domain byte-identical end to end (3/3 probes) —
+     * that preservation is what makes the receipt's `messageId` usable as
+     * a C3 echo-gate key at all.
+     */
+    async send(mail: OutboundMail): Promise<SendReceipt> {
+      if (sendDeps === undefined) {
+        throw new Error(
+          'ImapReadTransport: send not implemented — awaits red-line-3 confirmation (SMTP batch)',
+        );
+      }
+
+      const outboxId = sendDeps.mintOutboxId();
+      const messageId = `<amb-${outboxId}@agent-mail-bridge.invalid>`;
+      const receipt: SendReceipt = { outboxId, messageId };
+
+      await sendDeps.registerOutbox(receipt, mail);
+
+      // C9: to === from === selfAddress — the ONLY recipient this message
+      // can mechanically have. subject/text pass through byte-for-byte
+      // (redaction is the upstream producer's job; the transport adds no
+      // prefix or suffix). EXACTLY the six SmtpMessage keys, per its doc.
+      await sendDeps.smtpSend({
+        from: sendDeps.selfAddress,
+        to: sendDeps.selfAddress,
+        subject: mail.subjectRedacted,
+        text: mail.bodyRedacted,
+        messageId,
+        headers: { 'X-AMB-Outbox-ID': outboxId },
+      });
+
+      return receipt;
     },
 
     async markProcessed(mail: IncomingMail): Promise<void> {
@@ -528,5 +670,42 @@ export function buildImapflowFactory(opts: {
       await client.connect();
       return client;
     },
+  };
+}
+
+/**
+ * Builds the production `SmtpSend` (D-P3B5-1): one nodemailer transport
+ * over Gmail implicit-TLS SMTP — `smtp.gmail.com:465`, `secure: true` —
+ * the exact host/port/TLS combination ADR-0002's send half measured
+ * accepting authenticated self-sends 3/3. The `createTransport` call runs
+ * ONCE and the returned closure reuses that same transport instance for
+ * every submission; it is never rebuilt per message.
+ *
+ * NO `logger`/`debug` options, ever (RED LINE 2, AGENTS.md): nodemailer's
+ * logger prints the SMTP dialogue — auth exchange and recipient addresses
+ * included — to stdout. Same hard rule as `buildImapflowFactory`'s
+ * `logger: false` above, and the same caveat applies: do not add it "just
+ * to see what's happening" while debugging a send issue.
+ *
+ * Deliberately NOT unit-tested (unit tests inject fake `SmtpSend`s and
+ * never open a network connection); this wiring is exercised by the live
+ * send test (`tests/live/smtp-send-live.test.ts`, double-gated).
+ */
+export function buildDefaultSmtpSend(auth: { user: string; pass: string }): SmtpSend {
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth,
+  });
+  return async (message: SmtpMessage): Promise<void> => {
+    await transporter.sendMail({
+      from: message.from,
+      to: message.to,
+      subject: message.subject,
+      text: message.text,
+      messageId: message.messageId,
+      headers: message.headers,
+    });
   };
 }
