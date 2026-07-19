@@ -185,5 +185,5 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
 | --- | --- | --- |
 | Self-to-self Gmail `Authentication-Results` shape | [ADR-0003](adr/0003-self-mail-carries-no-auth-results.md) | **measured — there are none on legitimate self-mail**; polarity-inverted gate proposed, awaiting the user's decision (red line 6) |
 | IMAP IDLE reconnect / UIDVALIDITY behavior in practice | [ADR-0002](adr/0002-p0-1-gmail-imap-smtp-go.md) | **complete — Go** (read + send halves measured; self-send visibility ~15–30 s) |
-| `codex exec --json` session id extraction and resume semantics | P0-2 ADR | unblocked (CLI upgraded 0.140.0 → 0.144.6, probe green); measurement in progress |
+| `codex exec --json` session id extraction and resume semantics | [ADR-0004](adr/0004-p0-2-codex-exec-session-semantics.md) | **complete — Go** (`thread.started.thread_id`, resume retains context with a stable id, bogus id fails loud; P0-4 reserve not pursued) |
 | Linux credential storage (libsecret vs encrypted file, 0600) | implementation-phase ADR | open; CLI meanwhile enforces 0600/0700 on the env file (C10) |
