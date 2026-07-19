@@ -741,7 +741,7 @@ describe('SessionStore (D-P4B7-2)', () => {
     };
   }
 
-  it('create then findByThreadKey round-trips the summary with a NULL driver_session_id (the session exists before thread.started)', () => {
+  it('create then findByThreadKey round-trips the summary with NULL driver_session_id and worktree_path (the session exists before thread.started / worktree creation)', () => {
     const created = store.create(sessionInput());
 
     expect(created).toEqual({
@@ -749,6 +749,7 @@ describe('SessionStore (D-P4B7-2)', () => {
       threadKey: 'thread-key-0001',
       projectPath: '/tmp/fixtures/proj-a',
       driverSessionId: null,
+      worktreePath: null,
       createdAt: '2026-07-19T00:00:00.000Z',
       updatedAt: '2026-07-19T00:00:00.000Z',
     });
@@ -826,6 +827,81 @@ describe('SessionStore (D-P4B7-2)', () => {
       expect(() =>
         store.recordDriverSessionId(999999, DRIVER_SESSION_ID, '2026-07-19T00:05:00.000Z'),
       ).toThrow(/no agent session with id 999999/);
+    });
+  });
+
+  // D-P4B8-1: same four-branch first-write invariant as recordDriverSessionId
+  // above, over worktree_path — a session's worktree, once recorded, must
+  // never silently drift (resume MUST return to the original tree; a
+  // worktreesRoot config change that moves paths needs explicit handling in
+  // the daemon batch, never a silent overwrite here).
+  describe('recordWorktreePath (first-write invariant, D-P4B8-1 resume returns to the original worktree)', () => {
+    const WORKTREE_PATH = '/tmp/fixtures/worktrees/amb-session-1';
+    const OTHER_WORKTREE_PATH = '/tmp/fixtures/worktrees/amb-session-2';
+
+    it('first write onto NULL persists the worktree path, with updated_at = the write now and created_at untouched', () => {
+      const created = store.create(sessionInput());
+
+      store.recordWorktreePath(created.id, WORKTREE_PATH, '2026-07-19T00:05:00.000Z');
+
+      // Full-row assert: also the updated_at mutation killer for the first
+      // write — a mutant that forgets to write updated_at (or clobbers
+      // created_at) fails here, not just one that skips worktree_path.
+      expect(store.findByThreadKey('thread-key-0001')).toEqual({
+        ...created,
+        worktreePath: WORKTREE_PATH,
+        updatedAt: '2026-07-19T00:05:00.000Z',
+      });
+    });
+
+    it('re-recording the SAME path is idempotent: updated_at moves to the new now, every other column stays put', () => {
+      const created = store.create(sessionInput());
+      store.recordWorktreePath(created.id, WORKTREE_PATH, '2026-07-19T00:05:00.000Z');
+
+      store.recordWorktreePath(created.id, WORKTREE_PATH, '2026-07-19T00:07:00.000Z');
+
+      // updated_at advancing to the SECOND write's now is what kills a
+      // mutant whose idempotent branch is a pure no-op (returns without
+      // touching the row at all).
+      expect(store.findByThreadKey('thread-key-0001')).toEqual({
+        ...created,
+        worktreePath: WORKTREE_PATH,
+        updatedAt: '2026-07-19T00:07:00.000Z',
+      });
+    });
+
+    it('a DIFFERENT path over an existing non-NULL value throws and leaves the row byte-identical (never silently replaced)', () => {
+      const created = store.create(sessionInput());
+      store.recordWorktreePath(created.id, WORKTREE_PATH, '2026-07-19T00:05:00.000Z');
+      const beforeConflict = store.findByThreadKey('thread-key-0001');
+
+      expect(() =>
+        store.recordWorktreePath(created.id, OTHER_WORKTREE_PATH, '2026-07-19T00:09:00.000Z'),
+      ).toThrow(/already has worktree path/);
+
+      // Full-row assert: neither the path nor updated_at may move on the
+      // rejected write.
+      expect(store.findByThreadKey('thread-key-0001')).toEqual(beforeConflict);
+    });
+
+    it('throws an explicit error for an unknown session id', () => {
+      expect(() =>
+        store.recordWorktreePath(999999, WORKTREE_PATH, '2026-07-19T00:05:00.000Z'),
+      ).toThrow(/no agent session with id 999999/);
+    });
+
+    it('worktree_path and driver_session_id fill in independently (either order, both land)', () => {
+      const created = store.create(sessionInput());
+
+      store.recordWorktreePath(created.id, WORKTREE_PATH, '2026-07-19T00:05:00.000Z');
+      store.recordDriverSessionId(created.id, DRIVER_SESSION_ID, '2026-07-19T00:06:00.000Z');
+
+      expect(store.findByThreadKey('thread-key-0001')).toEqual({
+        ...created,
+        worktreePath: WORKTREE_PATH,
+        driverSessionId: DRIVER_SESSION_ID,
+        updatedAt: '2026-07-19T00:06:00.000Z',
+      });
     });
   });
 

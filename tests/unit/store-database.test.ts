@@ -22,12 +22,12 @@ function listTables(db: Db): string[] {
 // Guards decision D-P2-9 (SQLite schema v1) and the pragma/migration contract
 // that the rest of the store layer depends on.
 describe('openDatabase (D-P2-9 schema v1)', () => {
-  it('bumps user_version to the latest known migration (4, D-P4B7-2) on a fresh in-memory database', () => {
+  it('bumps user_version to the latest known migration (5, D-P4B8-1) on a fresh in-memory database', () => {
     const db = openDatabase(':memory:');
 
     const userVersion = db.pragma('user_version', { simple: true });
 
-    expect(userVersion).toBe(4);
+    expect(userVersion).toBe(5);
     db.close();
   });
 
@@ -90,13 +90,13 @@ describe('openDatabase (D-P2-9 schema v1)', () => {
       rmSync(dir, { recursive: true, force: true });
     });
 
-    it('re-opening is idempotent (user_version stays 4) and journaling is really WAL', () => {
+    it('re-opening is idempotent (user_version stays 5) and journaling is really WAL', () => {
       const first = openDatabase(dbPath);
       first.close();
 
       const second = openDatabase(dbPath);
 
-      expect(second.pragma('user_version', { simple: true })).toBe(4);
+      expect(second.pragma('user_version', { simple: true })).toBe(5);
       expect(second.pragma('journal_mode', { simple: true })).toBe('wal');
       second.close();
     });
@@ -382,7 +382,15 @@ describe('migration 004 (D-P4B7-2 agent_sessions)', () => {
   ];
 
   it('a fresh database goes straight to user_version 4 with agent_sessions present (STRICT) and its project index', () => {
-    const db = openDatabase(':memory:');
+    // Pinned to migrations 001..004 only (D-P4B8-1 added a real migration 5,
+    // so the default/full ladder no longer stops at 4) — this test's intent
+    // is specifically "migration 004's own effect", not "wherever the ladder
+    // currently ends". Same fix already applied to the 002/003 blocks above
+    // when the migration after each of them landed.
+    const db = openDatabase(
+      ':memory:',
+      MIGRATIONS.filter((migration) => migration.version <= 4),
+    );
 
     expect(db.pragma('user_version', { simple: true })).toBe(4);
 
@@ -416,7 +424,14 @@ describe('migration 004 (D-P4B7-2 agent_sessions)', () => {
     expect(db.pragma('user_version', { simple: true })).toBe(3);
     expect(listTables(db)).not.toContain('agent_sessions');
 
-    applyMigrations(db, MIGRATIONS);
+    // Pinned to migrations 001..004 for the same reason as the fresh-database
+    // test above (D-P4B8-1's migration 5 exists now): this call's job is
+    // "apply exactly migration 004 on top of the v3 fixture," not "run the
+    // whole current ladder."
+    applyMigrations(
+      db,
+      MIGRATIONS.filter((migration) => migration.version <= 4),
+    );
 
     expect(db.pragma('user_version', { simple: true })).toBe(4);
     const columns = db
@@ -424,6 +439,62 @@ describe('migration 004 (D-P4B7-2 agent_sessions)', () => {
       .all()
       .map((row) => row.name);
     expect(columns.sort()).toEqual([...SESSION_COLUMNS].sort());
+    db.close();
+  });
+});
+
+// Guards decision D-P4B8-1 (dispatch pipeline, Phase 4 batch 8 plan
+// docs/superpowers/plans/2026-07-19-phase-4-batch8-dispatch-pipeline.md):
+// migration 005 adds agent_sessions.worktree_path — resume MUST return to
+// the ORIGINAL worktree (a codex session's working state lives in that
+// tree), so the path is persisted next to driver_session_id. The table
+// already exists, so — like 002 and unlike 003/004 — this is an ALTER
+// (STRICT tables accept a nullable-column ADD without a DEFAULT), and
+// deliberately WITHOUT a backfill: a pre-005 row's worktree path was never
+// recorded anywhere, so NULL is the truthful value (the dispatch pipeline
+// fails closed on it — SESSION_STATE_INCOMPLETE — rather than guessing).
+describe('migration 005 (D-P4B8-1 agent_sessions.worktree_path)', () => {
+  const SESSION_COLUMNS_V5 = [
+    'id',
+    'thread_key',
+    'project_path',
+    'driver_session_id',
+    'worktree_path',
+    'created_at',
+    'updated_at',
+  ];
+
+  it('a fresh database goes straight to user_version 5 with worktree_path present on agent_sessions', () => {
+    const db = openDatabase(':memory:');
+
+    expect(db.pragma('user_version', { simple: true })).toBe(5);
+
+    const columns = db
+      .prepare<[], { name: string }>('PRAGMA table_info(agent_sessions)')
+      .all()
+      .map((row) => row.name);
+    expect(columns.sort()).toEqual([...SESSION_COLUMNS_V5].sort());
+    db.close();
+  });
+
+  it('a v4 database with an existing session row migrates to v5 and that row reads worktree_path NULL (no backfill)', () => {
+    const v4Migrations = MIGRATIONS.filter((migration) => migration.version <= 4);
+    const db = openDatabase(':memory:', v4Migrations);
+    expect(db.pragma('user_version', { simple: true })).toBe(4);
+    db.prepare(
+      `INSERT INTO agent_sessions (thread_key, project_path, driver_session_id, created_at, updated_at)
+       VALUES ('thread-key-0001', '/tmp/fixtures/proj-a', NULL, '2026-07-19T00:00:00.000Z', '2026-07-19T00:00:00.000Z')`,
+    ).run();
+
+    applyMigrations(db, MIGRATIONS);
+
+    expect(db.pragma('user_version', { simple: true })).toBe(5);
+    const row = db
+      .prepare<[], { thread_key: string; worktree_path: string | null }>(
+        `SELECT thread_key, worktree_path FROM agent_sessions WHERE thread_key = 'thread-key-0001'`,
+      )
+      .get();
+    expect(row).toEqual({ thread_key: 'thread-key-0001', worktree_path: null });
     db.close();
   });
 });

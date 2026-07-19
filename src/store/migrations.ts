@@ -99,6 +99,23 @@ CREATE TABLE agent_sessions (
 CREATE INDEX idx_agent_sessions_project ON agent_sessions(project_path);
 `;
 
+// D-P4B8-1 (Phase 4 batch 8 plan, docs/superpowers/plans/
+// 2026-07-19-phase-4-batch8-dispatch-pipeline.md): adds
+// agent_sessions.worktree_path — resume MUST return to the ORIGINAL
+// worktree (a codex session's working state lives in that tree), so the
+// dispatch pipeline persists the path next to driver_session_id under the
+// same first-write invariant (`sessionStore.recordWorktreePath`). The table
+// already exists, so — like 002 and unlike 003/004 — this is an ALTER
+// (STRICT tables accept a nullable-column ADD without a DEFAULT), and
+// deliberately WITHOUT a backfill: a pre-005 row's worktree path was never
+// recorded anywhere, so NULL is the truthful value — the dispatch pipeline
+// fails closed on it (SESSION_STATE_INCOMPLETE) rather than guessing a
+// path, and recovery policy for such partial rows belongs to the daemon
+// batch.
+const SCHEMA_V5 = `
+ALTER TABLE agent_sessions ADD COLUMN worktree_path TEXT;
+`;
+
 export interface Migration {
   version: number;
   sql: string;
@@ -109,4 +126,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 2, sql: SCHEMA_V2 },
   { version: 3, sql: SCHEMA_V3 },
   { version: 4, sql: SCHEMA_V4 },
+  { version: 5, sql: SCHEMA_V5 },
 ];

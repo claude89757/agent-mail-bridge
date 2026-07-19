@@ -5,17 +5,24 @@
  * `threadKey` and feeds the result into `routeCommand` as
  * `existingSession`.
  *
- * Lifecycle: `create` inserts the mapping with `driver_session_id` NULL —
- * the row exists as soon as a thread is first routed to a project, BEFORE
- * the driver's `thread.started` event supplies its session id.
+ * Lifecycle: `create` inserts the mapping with `driver_session_id` AND
+ * `worktree_path` both NULL — the row exists as soon as a thread is first
+ * routed to a project, BEFORE the worktree is created and BEFORE the
+ * driver's `thread.started` event supplies its session id.
  * `recordDriverSessionId` then performs a FIRST-WRITE-ONLY fill-in: ADR-0004
  * established (measured, not assumed) that `codex exec resume` re-emits the
  * SAME thread_id across resumes, so a thread's driver session id, once
  * recorded, must never change — a different id showing up is an anomaly
  * (upstream bug or identity confusion) and throws rather than silently
- * replacing the mapping. WHO calls `recordDriverSessionId` (the dispatch
- * pipeline, after observing `thread.started`) is the next batch's wiring,
- * out of scope here.
+ * replacing the mapping. `recordWorktreePath` (D-P4B8-1, migration 005) is
+ * the same invariant over the session's worktree location: resume MUST
+ * return to the ORIGINAL worktree (a codex session's working state lives in
+ * that tree), so the path, once recorded, never silently drifts either — a
+ * worktreesRoot config change that moves paths needs explicit handling in
+ * the daemon batch, never an overwrite here. Both are called by the
+ * dispatch pipeline (`src/application/dispatch.ts`): worktree path right
+ * after `createTaskWorktree`, driver session id after `startTask` hands
+ * back a non-null session id.
  *
  * Deliberately NO foreign key to `commands`: one session spans MANY
  * commands over its thread's lifetime (every reply on the thread is its own
@@ -59,6 +66,7 @@ interface SessionRow {
   thread_key: string;
   project_path: string;
   driver_session_id: string | null;
+  worktree_path: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -69,11 +77,15 @@ export interface SessionSummary {
   projectPath: string;
   /** NULL until the first dispatch's `thread.started` is recorded. */
   driverSessionId: string | null;
+  /** NULL until the first dispatch's worktree creation is recorded
+   *  (D-P4B8-1) — and NULL forever on rows that predate migration 005 (no
+   *  backfill; the dispatch pipeline fails closed on such rows). */
+  worktreePath: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
-const SELECT_COLUMNS = `id, thread_key, project_path, driver_session_id, created_at, updated_at`;
+const SELECT_COLUMNS = `id, thread_key, project_path, driver_session_id, worktree_path, created_at, updated_at`;
 
 function rowToSummary(row: SessionRow): SessionSummary {
   return {
@@ -81,6 +93,7 @@ function rowToSummary(row: SessionRow): SessionSummary {
     threadKey: row.thread_key,
     projectPath: row.project_path,
     driverSessionId: row.driver_session_id,
+    worktreePath: row.worktree_path,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -159,6 +172,40 @@ export class SessionStore {
          WHERE id = @id`,
       )
       .run({ id, driverSessionId, now });
+  }
+
+  /**
+   * First-write invariant over `worktree_path` (D-P4B8-1), same four
+   * branches as `recordDriverSessionId` above — read-assert-write, so a
+   * rejected call leaves the row untouched:
+   *
+   *   - current value NULL          -> write it (updated_at = now);
+   *   - current value === incoming  -> idempotent: refresh updated_at only;
+   *   - current value !== incoming  -> throw — resume must return to the
+   *     ORIGINAL worktree (the codex session's working state lives in that
+   *     tree), so a different path can only mean an upstream bug or an
+   *     unhandled worktreesRoot move; never silently redirect the session;
+   *   - id unknown                  -> throw.
+   */
+  recordWorktreePath(id: number, worktreePath: string, now: string): void {
+    const current = this.getRowById(id);
+    if (!current) {
+      throw new Error(`sessionStore.recordWorktreePath: no agent session with id ${id}`);
+    }
+
+    if (current.worktree_path !== null && current.worktree_path !== worktreePath) {
+      throw new Error(
+        `sessionStore.recordWorktreePath: agent session ${id} already has worktree path ` +
+          `${current.worktree_path}; refusing to replace it with ${worktreePath} ` +
+          `(resume must return to the original worktree — D-P4B8-1)`,
+      );
+    }
+    this.db
+      .prepare<{ id: number; worktreePath: string; now: string }>(
+        `UPDATE agent_sessions SET worktree_path = @worktreePath, updated_at = @now
+         WHERE id = @id`,
+      )
+      .run({ id, worktreePath, now });
   }
 
   /** All sessions mapped to `projectPath`, ordered by id (creation order). */
