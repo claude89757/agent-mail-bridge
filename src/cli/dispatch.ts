@@ -1,13 +1,19 @@
 /**
- * CLI subcommand dispatch (decision D-P5S-5): the entire testable command
- * surface -- `doctor`, `setup`, the four daemon-dependent placeholders
- * (`status`/`pause`/`resume`/`logout`), `--help`, `--version`, no-args, and
- * unknown-command handling -- lives here as a pure function of injected
- * `DispatchIo`. `src/cli/main.ts` (Task 3) is the only place that reads
- * real `process.argv`/`process.env`/`os.homedir()`/`fs`/`console`; it
- * assembles a real `DispatchIo` and calls `dispatch` once. That split is
- * what lets every scenario below be tested by calling `dispatch` directly
- * (D-P5S-7) instead of spawning a subprocess.
+ * CLI subcommand dispatch (decision D-P5S-5, amended by D-P5B12-5): the
+ * entire testable command surface -- `doctor`, `setup`, the four real
+ * daemon commands (`start`/`status`/`pause`/`resume`), the one remaining
+ * placeholder (`logout`, held for the keychain open question), `--help`,
+ * `--version`, no-args, and unknown-command handling -- lives here as a
+ * pure function of injected `DispatchIo`. `src/cli/main.ts` is the only
+ * place that reads real `process.argv`/`process.env`/`os.homedir()`/`fs`/
+ * `console`; it assembles a real `DispatchIo` and calls `dispatch` once.
+ * That split is what lets every scenario below be tested by calling
+ * `dispatch` directly (D-P5S-7) instead of spawning a subprocess.
+ *
+ * `dispatch` is ASYNC since batch 12: `amb start` runs the long-lived
+ * daemon shell to completion, so its route (and therefore this function)
+ * resolves to the exit code instead of returning it synchronously. Every
+ * other route stays synchronous inside and is simply awaited through.
  *
  * D-P5S-1 locks `node:util`'s `parseArgs` in as the CLI's parsing tool, but
  * also locks subcommand dispatch itself as HAND-ROLLED on the first
@@ -79,10 +85,20 @@ export interface DispatchIo {
    * `LoadConfigIo['readFileSync']` (`./config.ts`). */
   readonly readFileSync: (path: string) => string;
   readonly doctorIo: DoctorIo;
-  /** Handles `setup <rest>`. A Task-3 stub (`createSetupPlaceholder`) until
-   * Task 4 wires the real `runSetup` from `src/cli/setup.ts` -- see the
-   * module doc comment. */
+  /** Handles `setup <rest>` -- `main.ts` binds `src/cli/setup.ts`'s real
+   * `runSetup`; see the module doc comment. */
   readonly runSetup: (args: readonly string[]) => number;
+  /** Handles `start <rest>` (D-P5B12-5) -- `main.ts` binds
+   * `src/cli/start.ts`'s `runStart` with real io. Async because the daemon
+   * runs to completion inside it. */
+  readonly runStart: (args: readonly string[]) => number | Promise<number>;
+  /** Handles `status` -- `main.ts` binds `src/cli/statusCmd.ts`'s
+   * `runStatus` (printing included, per the runSetup binding precedent). */
+  readonly runStatus: () => number;
+  /** Handles `pause` -- `main.ts` binds `runPause` with a fresh `now`. */
+  readonly runPause: () => number;
+  /** Handles `resume` -- `main.ts` binds `runResume` with a fresh `now`. */
+  readonly runResume: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,10 +113,11 @@ interface CommandSummary {
 const COMMANDS: readonly CommandSummary[] = [
   { name: 'doctor', summary: 'Run local health checks (Node version, config, credentials, database)' },
   { name: 'setup', summary: 'Write the initial config and record the first-install fence' },
-  { name: 'status', summary: 'Show daemon status (requires the background daemon)' },
-  { name: 'pause', summary: 'Pause mail processing (requires the background daemon)' },
-  { name: 'resume', summary: 'Resume mail processing (requires the background daemon)' },
-  { name: 'logout', summary: 'Remove stored credentials and config (requires the background daemon)' },
+  { name: 'start', summary: 'Run the mail-processing daemon in the foreground (--dry-run rehearses without executing)' },
+  { name: 'status', summary: 'Show bridge status from the database (does not probe a running daemon)' },
+  { name: 'pause', summary: 'Pause mail processing (takes effect within one poll interval)' },
+  { name: 'resume', summary: 'Resume mail processing (takes effect within one poll interval)' },
+  { name: 'logout', summary: 'Remove stored credentials and config (not implemented yet)' },
 ];
 
 const NAME_COLUMN_WIDTH = Math.max(...COMMANDS.map((c) => c.name.length)) + 2;
@@ -170,11 +187,14 @@ function runDoctorCommand(io: DispatchIo): number {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-const PLACEHOLDER_COMMANDS = new Set(['status', 'pause', 'resume', 'logout']);
+/** Batch 12 (D-P5B12-5) shrank this to `logout` alone: credential-storage
+ *  cleanup is held for the keychain open question (roadmap open question 1);
+ *  every other former placeholder now routes to a real handler. */
+const PLACEHOLDER_COMMANDS = new Set(['logout']);
 
 function reportPlaceholderCommand(command: string, writer: Writer): number {
   writer.err(
-    `\`amb ${command}\` is not available yet: it requires the background daemon, which has not been implemented (arrives with the real Phase 5 daemon).`,
+    `\`amb ${command}\` is not implemented yet: credential-storage cleanup is pending the keychain decision.`,
   );
   return 2;
 }
@@ -188,10 +208,11 @@ function reportUnknownCommand(command: string, writer: Writer): number {
 /**
  * `argv` is the already-sliced, user-facing argument list (what `main.ts`
  * passes as `process.argv.slice(2)` -- `argv[0]` here is `argv[2]` in the
- * D-P5S-1 sense). Returns a plain exit code; never calls `process.exit`
- * (see the module doc comment).
+ * D-P5S-1 sense). Resolves to a plain exit code; never calls
+ * `process.exit` (see the module doc comment). Async solely for `start`
+ * (module doc comment) -- every other route completes synchronously.
  */
-export function dispatch(argv: readonly string[], io: DispatchIo): number {
+export async function dispatch(argv: readonly string[], io: DispatchIo): Promise<number> {
   const [head, ...rest] = argv;
 
   if (head === undefined) {
@@ -219,6 +240,22 @@ export function dispatch(argv: readonly string[], io: DispatchIo): number {
 
   if (head === 'setup') {
     return io.runSetup(rest);
+  }
+
+  if (head === 'start') {
+    return io.runStart(rest);
+  }
+
+  if (head === 'status') {
+    return io.runStatus();
+  }
+
+  if (head === 'pause') {
+    return io.runPause();
+  }
+
+  if (head === 'resume') {
+    return io.runResume();
   }
 
   if (PLACEHOLDER_COMMANDS.has(head)) {

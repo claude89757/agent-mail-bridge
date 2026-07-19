@@ -96,6 +96,24 @@ export class MetaStore {
   }
 
   /**
+   * Every `(mailbox, uidValidity)` watermark row, deterministically ordered
+   * (D-P5B12-5) — `amb status`'s read surface; the daemon itself only ever
+   * reads point-wise via `getWatermark`.
+   */
+  listWatermarks(): { mailbox: string; uidValidity: string; lastUid: number }[] {
+    const rows = this.db
+      .prepare<[], { mailbox: string; uidvalidity: string; last_uid: number }>(
+        `SELECT mailbox, uidvalidity, last_uid FROM uid_watermark ORDER BY mailbox, uidvalidity`,
+      )
+      .all();
+    return rows.map((row) => ({
+      mailbox: row.mailbox,
+      uidValidity: row.uidvalidity,
+      lastUid: row.last_uid,
+    }));
+  }
+
+  /**
    * UPSERT with `MAX(last_uid, excluded.last_uid)` semantics: advancing with
    * a `uid` at or below the stored value leaves the row unchanged.
    */

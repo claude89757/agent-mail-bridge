@@ -1250,3 +1250,108 @@ describe('SessionStore (D-P4B7-2)', () => {
     });
   });
 });
+
+// D-P5B12-5: `amb status` reads its per-table counts through the stores
+// that own each table (better-sqlite3 stays confined to src/store/**).
+// Zero-filled records: every legal status appears in the answer even at
+// count 0, so the CLI renders a stable line without special-casing.
+describe('status-command count surfaces (D-P5B12-5)', () => {
+  let db: Db;
+
+  beforeEach(() => {
+    db = openDatabase(':memory:');
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('CommandStore.countByStatus is zero-filled on a fresh database and counts every status bucket', () => {
+    const store = new CommandStore(db);
+
+    expect(store.countByStatus()).toEqual({
+      RECEIVED: 0,
+      SYSTEM_ECHO: 0,
+      REJECTED: 0,
+      QUEUED_WINDOW: 0,
+      READY_FOR_DISPATCH: 0,
+    });
+
+    store.insertIfAbsent(commandInput({ messageId: 'c-1@example.com', status: 'RECEIVED' }));
+    store.insertIfAbsent(
+      commandInput({ messageId: 'c-2@example.com', status: 'READY_FOR_DISPATCH' }),
+    );
+    store.insertIfAbsent(
+      commandInput({ messageId: 'c-3@example.com', status: 'READY_FOR_DISPATCH' }),
+    );
+    store.insertIfAbsent(commandInput({ messageId: 'c-4@example.com', status: 'SYSTEM_ECHO' }));
+
+    expect(store.countByStatus()).toEqual({
+      RECEIVED: 1,
+      SYSTEM_ECHO: 1,
+      REJECTED: 0,
+      QUEUED_WINDOW: 0,
+      READY_FOR_DISPATCH: 2,
+    });
+  });
+
+  it('ClarificationStore.countByStatus is zero-filled and counts PENDING/EXPIRED buckets', () => {
+    const commandStore = new CommandStore(db);
+    const store = new ClarificationStore(db);
+
+    expect(store.countByStatus()).toEqual({
+      PENDING: 0,
+      CONSUMED: 0,
+      EXPIRED: 0,
+      SUPERSEDED: 0,
+    });
+
+    const { record } = commandStore.insertIfAbsent(
+      commandInput({ messageId: 'cl-1@example.com', status: 'READY_FOR_DISPATCH' }),
+    );
+    const created = store.create({
+      commandId: record.id,
+      token: 'Aa-Aa-Tok-0001',
+      threadKey: 'thread-count',
+      candidateSetJson: '[]',
+      candidateSetVersion: 1,
+      expiresAt: '2026-07-20T00:00:00.000Z',
+      now: '2026-07-19T00:00:00.000Z',
+    });
+    store.transition(created.id, 'EXPIRED', null, '2026-07-21T00:00:00.000Z');
+    store.create({
+      commandId: record.id,
+      token: 'Aa-Aa-Tok-0002',
+      // thread_key carries a UNIQUE constraint (migration 003), so the
+      // second record uses its own key.
+      threadKey: 'thread-count-2',
+      candidateSetJson: '[]',
+      candidateSetVersion: 1,
+      expiresAt: '2026-07-22T00:00:00.000Z',
+      now: '2026-07-21T00:00:00.000Z',
+    });
+
+    expect(store.countByStatus()).toEqual({
+      PENDING: 1,
+      CONSUMED: 0,
+      EXPIRED: 1,
+      SUPERSEDED: 0,
+    });
+  });
+
+  it('MetaStore.listWatermarks returns every (mailbox, uidValidity) row with its lastUid, deterministically ordered', () => {
+    const store = new MetaStore(db);
+
+    expect(store.listWatermarks()).toEqual([]);
+
+    store.advanceWatermark('INBOX', '1690000001', 7);
+    store.advanceWatermark('INBOX', '1690000000', 42);
+    store.advanceWatermark('Archive', '1690000000', 3);
+
+    expect(store.listWatermarks()).toEqual([
+      { mailbox: 'Archive', uidValidity: '1690000000', lastUid: 3 },
+      { mailbox: 'INBOX', uidValidity: '1690000000', lastUid: 42 },
+      { mailbox: 'INBOX', uidValidity: '1690000001', lastUid: 7 },
+    ]);
+  });
+});

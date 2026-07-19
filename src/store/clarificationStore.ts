@@ -35,6 +35,7 @@ import type { Database } from 'better-sqlite3';
 
 import {
   assertClarificationTransition,
+  CLARIFICATION_STATUSES,
   type ClarificationStatus,
 } from '../domain/clarificationState.js';
 
@@ -267,6 +268,26 @@ export class ClarificationStore {
          WHERE id = @id`,
       )
       .run({ id, status: next, reason, now });
+  }
+
+  /**
+   * Row count per status, ZERO-FILLED over `CLARIFICATION_STATUSES`
+   * (D-P5B12-5) — same stable-line rationale as
+   * `commandStore.countByStatus`.
+   */
+  countByStatus(): Record<ClarificationStatus, number> {
+    const counts = Object.fromEntries(
+      CLARIFICATION_STATUSES.map((status) => [status, 0]),
+    ) as Record<ClarificationStatus, number>;
+    const rows = this.db
+      .prepare<[], { status: string; count: number }>(
+        `SELECT status, COUNT(*) AS count FROM clarification_requests GROUP BY status`,
+      )
+      .all();
+    for (const row of rows) {
+      counts[row.status as ClarificationStatus] = row.count;
+    }
+    return counts;
   }
 
   private getRowById(id: number): ClarificationRow | undefined {

@@ -1,0 +1,235 @@
+/**
+ * `amb start` (decision D-P5B12-5): loadConfig → assembleDaemon →
+ * runDaemonShell, exit code mapped from the shell outcome — `signal` ⇒ 0
+ * (a requested stop is a success), `fatal` ⇒ 1 (three consecutive failed
+ * rounds; restart policy belongs to the operator's supervisor). The daemon
+ * runs in the FOREGROUND: v0.1 ships no daemonizer — launchd/systemd units
+ * are the packaging batch's concern.
+ *
+ * `--dry-run` overrides `config.dryRun` to `true` for this run only: a
+ * full-chain rehearsal in which every dispatch intent lands
+ * `SKIPPED_DRY_RUN` — zero codex invocations, zero model quota (red line
+ * 5's rehearsal mode).
+ *
+ * `runStart(args, io)` is pure of real globals (the cli-doctor/cli-setup io
+ * discipline): `StartIo` carries the config-read pieces plus the assembly
+ * (`assemble`), the shell (`runShell`), and the shell's three injected
+ * effects (`sleep`/`onShutdownSignal`/`log`) so tests pin the glue with
+ * fakes. The `buildReal*` functions at the bottom are the ONE place the
+ * real implementations are bound — including the production
+ * `AssemblyBuilders` (real IMAP/SMTP transport constructors, the real
+ * codex driver, real git/fs worktree io). Real IO happens only when the
+ * daemon RUNS, never at binding time.
+ *
+ * RED LINES: the shell's `log` binds to `console.error` HERE — `src/cli/**`
+ * is the eslint `no-console` exemption surface — and every line the shell
+ * hands it is already scrubbed (`runDaemonShell`'s emit funnel).
+ * `selfAddress` and credential values never appear in anything this module
+ * prints or logs. Gmail endpoints are pinned constants (imap.gmail.com:993
+ * mirrors ADR-0002's measured read half; the SMTP twin lives in
+ * `buildDefaultSmtpSend`).
+ */
+import { readFileSync as fsReadFileSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { homedir as osHomedir } from 'node:os';
+import { parseArgs } from 'node:util';
+
+import { buildDefaultProjectScanIo, buildProjectIndex } from '../application/projectIndex.js';
+import { buildDefaultWorktreeIo, createTaskWorktree } from '../application/worktreeManager.js';
+import { assembleDaemon, readCredentialsFile } from '../daemon/assembly.js';
+import type { AssembledDaemon, AssemblyBuilders } from '../daemon/assembly.js';
+import { runDaemonShell } from '../daemon/shell.js';
+import type { ShellDeps, ShellOutcome } from '../daemon/shell.js';
+import { buildDefaultSpawnCodex, createCodexDriver } from '../drivers/codexDriver.js';
+import { openDatabase } from '../store/database.js';
+import {
+  buildDefaultSmtpSend,
+  buildImapflowFactory,
+  createImapReadTransport,
+} from '../transports/imapRead.js';
+
+import type { BridgeConfig, LoadConfigIo } from './config.js';
+import { loadConfig } from './config.js';
+import type { Writer } from './dispatch.js';
+import type { EnvLike } from './paths.js';
+import { resolveConfigPath } from './paths.js';
+
+const USAGE = 'usage: amb start [--dry-run]';
+
+/** ADR-0002's measured Gmail read endpoint (v0.1 targets Gmail only; the
+ *  SMTP twin `smtp.gmail.com:465` is pinned inside `buildDefaultSmtpSend`). */
+const IMAP_HOST = 'imap.gmail.com';
+const IMAP_PORT = 993;
+
+export interface StartIo {
+  readonly env: EnvLike;
+  readonly homedir: string;
+  /** Same contract as `LoadConfigIo['readFileSync']`. */
+  readonly readFileSync: (path: string) => string;
+  readonly writer: Writer;
+  /** Production: `assembleDaemon` with `buildProductionAssemblyBuilders()`. */
+  readonly assemble: (config: BridgeConfig) => Promise<AssembledDaemon>;
+  /** Production: `runDaemonShell`. */
+  readonly runShell: (deps: ShellDeps) => Promise<ShellOutcome>;
+  /** The shell's sleep — production: a `setTimeout` promise. */
+  readonly sleep: (ms: number) => Promise<void>;
+  /** The shell's signal seam — production: SIGINT/SIGTERM listeners. */
+  readonly onShutdownSignal: (fn: () => void) => () => void;
+  /** The shell's log sink — production: `console.error`. */
+  readonly log: (line: string) => void;
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function runStart(args: readonly string[], io: StartIo): Promise<number> {
+  let dryRunFlag: boolean;
+  try {
+    const { values } = parseArgs({
+      args: [...args],
+      options: { 'dry-run': { type: 'boolean', default: false } },
+      allowPositionals: false,
+      strict: true,
+    });
+    dryRunFlag = values['dry-run'];
+  } catch (error) {
+    io.writer.err(`amb start: invalid arguments: ${describeError(error)} (${USAGE})`);
+    return 2;
+  }
+
+  const configPath = resolveConfigPath(io.env, io.homedir);
+  const loadIo: LoadConfigIo = {
+    readFileSync: io.readFileSync,
+    homedir: io.homedir,
+    env: io.env,
+  };
+  const loaded = loadConfig(configPath, loadIo);
+  if (!loaded.ok) {
+    io.writer.err('amb start: cannot load config:');
+    for (const error of loaded.errors) {
+      io.writer.err(`  - ${error}`);
+    }
+    return 1;
+  }
+  // --dry-run overrides for THIS RUN only; the on-disk config is untouched.
+  const config: BridgeConfig = dryRunFlag ? { ...loaded.config, dryRun: true } : loaded.config;
+
+  let assembled: AssembledDaemon;
+  try {
+    assembled = await io.assemble(config);
+  } catch (error) {
+    io.writer.err(`amb start: ${describeError(error)}`);
+    return 1;
+  }
+
+  try {
+    io.log(
+      `amb daemon starting (poll every ${String(config.pollIntervalSeconds)}s, ` +
+        `dry-run: ${config.dryRun ? 'yes' : 'no'})`,
+    );
+    for (const rejected of assembled.indexRejected) {
+      io.log(`project root rejected: ${rejected.path} (${rejected.reason})`);
+    }
+
+    const outcome = await io.runShell({
+      ticks: assembled.ticks,
+      metaStore: assembled.metaStore,
+      homeDir: assembled.homeDir,
+      sleep: io.sleep,
+      onShutdownSignal: io.onShutdownSignal,
+      log: io.log,
+      pollIntervalMs: config.pollIntervalSeconds * 1000,
+    });
+
+    if (outcome.reason === 'signal') {
+      io.log('amb daemon stopped (shutdown signal)');
+      return 0;
+    }
+    io.log('amb daemon stopped (fatal — see the errors above)');
+    return 1;
+  } finally {
+    await assembled.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Production wiring (the only place real implementations are bound)
+// ---------------------------------------------------------------------------
+
+/**
+ * The real `AssemblyBuilders` (D-P5B12-4). Pure BINDING: nothing here opens
+ * a connection, spawns a process, or reads a file until the assembled
+ * daemon actually runs. Credentials: `readCredentialsFile` (fail closed,
+ * values reach only the transport constructors below — the IMAP factory
+ * and the SMTP sender, both of which are constructed with `logger`/debug
+ * output hard-disabled per red line 2).
+ */
+export function buildProductionAssemblyBuilders(): AssemblyBuilders {
+  return {
+    openDb: (path) => openDatabase(path),
+    buildTransport: ({ selfAddress, credentials, registerOutbox }) =>
+      createImapReadTransport({
+        factory: buildImapflowFactory({
+          host: IMAP_HOST,
+          port: IMAP_PORT,
+          user: credentials.user,
+          pass: credentials.pass,
+        }),
+        send: {
+          selfAddress,
+          smtpSend: buildDefaultSmtpSend({ user: credentials.user, pass: credentials.pass }),
+          registerOutbox,
+        },
+      }),
+    buildDriver: () => createCodexDriver({ spawnCodex: buildDefaultSpawnCodex() }),
+    buildIndex: (input) => buildProjectIndex(input, buildDefaultProjectScanIo()),
+    createWorktree: (input) => createTaskWorktree(input, buildDefaultWorktreeIo()),
+    directoryExists: async (path) => {
+      try {
+        return (await stat(path)).isDirectory();
+      } catch {
+        return false;
+      }
+    },
+    homedir: () => osHomedir(),
+    readCredentials: readCredentialsFile,
+    clock: () => new Date().toISOString(),
+  };
+}
+
+/**
+ * The real `StartIo` (bound once by `main.ts`). Signal seam: one handler
+ * for BOTH SIGINT and SIGTERM; the returned unsubscribe removes both, so a
+ * finished shell leaves the default signal disposition behind it.
+ */
+export function buildRealStartIo(writer: Writer): StartIo {
+  return {
+    env: process.env,
+    homedir: osHomedir(),
+    readFileSync: (path) => fsReadFileSync(path, 'utf8'),
+    writer,
+    assemble: (config) => assembleDaemon(config, buildProductionAssemblyBuilders()),
+    runShell: runDaemonShell,
+    sleep: (ms) =>
+      new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      }),
+    onShutdownSignal: (fn) => {
+      const handler = (): void => {
+        fn();
+      };
+      process.on('SIGINT', handler);
+      process.on('SIGTERM', handler);
+      return () => {
+        process.off('SIGINT', handler);
+        process.off('SIGTERM', handler);
+      };
+    },
+    // The src/cli/** no-console exemption surface: the ONE production log
+    // sink for the daemon shell (text arrives already scrubbed).
+    log: (line) => {
+      console.error(line);
+    },
+  };
+}

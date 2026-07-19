@@ -15,7 +15,11 @@
  */
 import type { Database } from 'better-sqlite3';
 
-import { assertCommandTransition, type CommandStatus } from '../domain/commandState.js';
+import {
+  assertCommandTransition,
+  COMMAND_STATUSES,
+  type CommandStatus,
+} from '../domain/commandState.js';
 
 export interface CommandRecordInput {
   messageId: string;
@@ -148,6 +152,27 @@ export class CommandStore {
   getById(id: number): CommandRecord | undefined {
     const row = this.getRowById(id);
     return row ? rowToRecord(row) : undefined;
+  }
+
+  /**
+   * Row count per status, ZERO-FILLED over `COMMAND_STATUSES` (D-P5B12-5):
+   * every legal status appears in the answer even at 0, so `amb status`
+   * renders one stable line without special-casing absent buckets.
+   */
+  countByStatus(): Record<CommandStatus, number> {
+    const counts = Object.fromEntries(COMMAND_STATUSES.map((status) => [status, 0])) as Record<
+      CommandStatus,
+      number
+    >;
+    const rows = this.db
+      .prepare<[], { status: string; count: number }>(
+        `SELECT status, COUNT(*) AS count FROM commands GROUP BY status`,
+      )
+      .all();
+    for (const row of rows) {
+      counts[row.status as CommandStatus] = row.count;
+    }
+    return counts;
   }
 
   private getRowById(id: number): CommandRow | undefined {

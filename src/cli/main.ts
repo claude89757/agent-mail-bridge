@@ -22,6 +22,9 @@ import { dispatch } from './dispatch.js';
 import type { DispatchIo, Writer } from './dispatch.js';
 import { runSetup } from './setup.js';
 import type { SetupIo } from './setup.js';
+import { buildRealStartIo, runStart } from './start.js';
+import { runPause, runResume, runStatus } from './statusCmd.js';
+import type { StatusCommandResult, StatusIo } from './statusCmd.js';
 
 /**
  * Reads the running package's own version straight from `package.json` at
@@ -80,6 +83,21 @@ function buildRealDispatchIo(): DispatchIo {
   const writer = buildRealWriter();
   const doctorIo = buildDefaultDoctorIo();
   const setupIo = buildRealSetupIo(doctorIo);
+  // `status`/`pause`/`resume` (D-P5B12-5) reuse the SAME production
+  // `openDatabase` doctor already wires -- one real implementation only.
+  const statusIo: StatusIo = {
+    env: process.env,
+    homedir: homedir(),
+    readFileSync: (path) => readFileSync(path, 'utf8'),
+    openDatabase: doctorIo.openDatabase,
+  };
+  const printResult = (result: StatusCommandResult): number => {
+    const print = result.exitCode === 0 ? writer.out : writer.err;
+    for (const message of result.messages) {
+      print(message);
+    }
+    return result.exitCode;
+  };
   return {
     writer,
     version: readPackageVersion(),
@@ -87,11 +105,11 @@ function buildRealDispatchIo(): DispatchIo {
     homedir: homedir(),
     readFileSync: (path) => readFileSync(path, 'utf8'),
     doctorIo,
-    // Task 4: the real `runSetup` (`src/cli/setup.ts`, D-P5S-6) replaces the
-    // Task-3 placeholder here. `dispatch.ts`'s own `case 'setup':` route is
-    // untouched (see its module doc comment) -- only this assembly changed.
-    // `new Date()` appears ONLY here, evaluated at the moment `setup` is
-    // actually invoked, never inside `runSetup` itself (D-P5S-6).
+    // The real `runSetup` (`src/cli/setup.ts`, D-P5S-6). `dispatch.ts`'s
+    // own `case 'setup':` route is handler-agnostic (see its module doc
+    // comment) -- only this assembly knows the implementation. `new Date()`
+    // appears ONLY in this assembly, evaluated at the moment a command is
+    // actually invoked, never inside the command modules themselves.
     runSetup: (args) => {
       const result = runSetup(args, setupIo, new Date());
       const print = result.exitCode === 0 ? writer.out : writer.err;
@@ -100,6 +118,11 @@ function buildRealDispatchIo(): DispatchIo {
       }
       return result.exitCode;
     },
+    // D-P5B12-5: the real daemon commands.
+    runStart: (args) => runStart(args, buildRealStartIo(writer)),
+    runStatus: () => printResult(runStatus(statusIo)),
+    runPause: () => printResult(runPause(statusIo, new Date())),
+    runResume: () => printResult(runResume(statusIo, new Date())),
   };
 }
 
@@ -110,5 +133,8 @@ const invokedAsScript =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedAsScript) {
-  process.exitCode = dispatch(process.argv.slice(2), buildRealDispatchIo());
+  // Top-level await: `dispatch` is async since batch 12 (`amb start` runs
+  // the daemon to completion). `process.exitCode` (never `process.exit()`)
+  // still lets stdout/stderr flush before the process actually exits.
+  process.exitCode = await dispatch(process.argv.slice(2), buildRealDispatchIo());
 }

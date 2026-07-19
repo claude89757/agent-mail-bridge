@@ -7,9 +7,11 @@ import type { DispatchIo, Writer } from '../../src/cli/dispatch.js';
 
 // Guards D-P5S-1 (subcommand dispatch is hand-rolled on the first
 // user-facing argv token; node:util parseArgs is reserved for a
-// subcommand's OWN flags -- Task 4's `setup` is its first consumer here,
-// not this module) and D-P5S-5 (command surface: doctor/setup/status/
-// pause/resume/logout + --help/--version, placeholders honestly exit 2).
+// subcommand's OWN flags) and D-P5S-5 as amended by D-P5B12-5 (command
+// surface: doctor/setup/start/status/pause/resume + --help/--version;
+// `logout` is the ONE remaining placeholder, held for the keychain open
+// question). `dispatch` is async since batch 12 — `amb start` runs a
+// long-lived daemon — so every scenario below awaits it.
 //
 // Per D-P5S-7 these tests call `dispatch` directly with injected io --
 // never spawn a subprocess and never touch main.ts's real argv/process
@@ -40,7 +42,10 @@ function baseDoctorIo(overrides: Partial<DoctorIo> = {}): DoctorIo {
 /** `readFileSync` always throws (no config on disk) by default -- every
  * scenario below except the dedicated doctor test is indifferent to config
  * content, and a throwing default makes any accidental real doctor
- * execution fail loudly instead of silently reading a real file. */
+ * execution fail loudly instead of silently reading a real file. Every
+ * daemon-command handler throws by default for the same reason: a test
+ * that did not explicitly wire one must fail loudly if dispatch routes
+ * there unexpectedly. */
 function baseDispatchIo(overrides: Partial<DispatchIo> = {}): DispatchIo {
   return {
     writer: makeWriter(),
@@ -54,16 +59,28 @@ function baseDispatchIo(overrides: Partial<DispatchIo> = {}): DispatchIo {
     runSetup: () => {
       throw new Error('unexpected runSetup call in this test');
     },
+    runStart: () => {
+      throw new Error('unexpected runStart call in this test');
+    },
+    runStatus: () => {
+      throw new Error('unexpected runStatus call in this test');
+    },
+    runPause: () => {
+      throw new Error('unexpected runPause call in this test');
+    },
+    runResume: () => {
+      throw new Error('unexpected runResume call in this test');
+    },
     ...overrides,
   };
 }
 
 describe('dispatch — doctor/setup routing (D-P5S-1, D-P5S-5)', () => {
-  it('routes "doctor" to the real doctor assembly: prints the rendered report and returns its exitCode', () => {
+  it('routes "doctor" to the real doctor assembly: prints the rendered report and returns its exitCode', async () => {
     const writer = makeWriter();
     const io = baseDispatchIo({ writer });
 
-    const exitCode = dispatch(['doctor'], io);
+    const exitCode = await dispatch(['doctor'], io);
 
     // config is unreachable (fake readFileSync always throws), so config/
     // credentials-file/database/ready-at all fail closed -> exitCode 1;
@@ -81,7 +98,7 @@ describe('dispatch — doctor/setup routing (D-P5S-1, D-P5S-5)', () => {
     expect(writer.errLines).toHaveLength(0);
   });
 
-  it('routes "setup" to the injected runSetup handler, passing through the remaining args', () => {
+  it('routes "setup" to the injected runSetup handler, passing through the remaining args', async () => {
     const writer = makeWriter();
     let receivedArgs: readonly string[] | undefined;
     const io = baseDispatchIo({
@@ -92,17 +109,17 @@ describe('dispatch — doctor/setup routing (D-P5S-1, D-P5S-5)', () => {
       },
     });
 
-    const exitCode = dispatch(['setup', '--self', 'bridge-user@example.com'], io);
+    const exitCode = await dispatch(['setup', '--self', 'bridge-user@example.com'], io);
 
     expect(receivedArgs).toEqual(['--self', 'bridge-user@example.com']);
     expect(exitCode).toBe(42);
   });
 
-  it('setup with the real Task 3 placeholder handler: stderr message, exit 2 (Task 4 swaps the handler, not the route)', () => {
+  it('setup with the historical placeholder handler: stderr message, exit 2 (the route is handler-agnostic)', async () => {
     const writer = makeWriter();
     const io = baseDispatchIo({ writer, runSetup: createSetupPlaceholder(writer) });
 
-    const exitCode = dispatch(['setup'], io);
+    const exitCode = await dispatch(['setup'], io);
 
     expect(exitCode).toBe(2);
     expect(writer.errLines.join('\n')).toContain('amb setup');
@@ -110,15 +127,58 @@ describe('dispatch — doctor/setup routing (D-P5S-1, D-P5S-5)', () => {
   });
 });
 
+describe('dispatch — daemon command routing (D-P5B12-5)', () => {
+  it('routes "start" to the injected runStart handler with the remaining args and awaits its (possibly async) exit code', async () => {
+    const writer = makeWriter();
+    let receivedArgs: readonly string[] | undefined;
+    const io = baseDispatchIo({
+      writer,
+      runStart: (args) => {
+        receivedArgs = args;
+        return Promise.resolve(7);
+      },
+    });
+
+    const exitCode = await dispatch(['start', '--dry-run'], io);
+
+    expect(receivedArgs).toEqual(['--dry-run']);
+    expect(exitCode).toBe(7);
+  });
+
+  it.each([
+    ['status', 'runStatus'],
+    ['pause', 'runPause'],
+    ['resume', 'runResume'],
+  ] as const)(
+    'routes "%s" to the injected %s handler and returns its exit code',
+    async (command, handler) => {
+      const writer = makeWriter();
+      let called = 0;
+      const io = baseDispatchIo({
+        writer,
+        [handler]: () => {
+          called += 1;
+          return 0;
+        },
+      });
+
+      const exitCode = await dispatch([command], io);
+
+      expect(called).toBe(1);
+      expect(exitCode).toBe(0);
+    },
+  );
+});
+
 describe('dispatch — --version', () => {
-  it('prints the exact version from package.json to stdout and exits 0', () => {
+  it('prints the exact version from package.json to stdout and exits 0', async () => {
     const manifest = JSON.parse(
       readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
     ) as { version: string };
     const writer = makeWriter();
     const io = baseDispatchIo({ writer, version: manifest.version });
 
-    const exitCode = dispatch(['--version'], io);
+    const exitCode = await dispatch(['--version'], io);
 
     expect(writer.outLines).toEqual([manifest.version]);
     expect(writer.errLines).toHaveLength(0);
@@ -127,12 +187,12 @@ describe('dispatch — --version', () => {
 });
 
 describe('dispatch — --help / no-args (D-P5S-5 full command surface)', () => {
-  const ALL_COMMANDS = ['doctor', 'setup', 'status', 'pause', 'resume', 'logout'];
+  const ALL_COMMANDS = ['doctor', 'setup', 'start', 'status', 'pause', 'resume', 'logout'];
 
-  it('--help lists every command and both flags on stdout, exit 0', () => {
+  it('--help lists every command and both flags on stdout, exit 0', async () => {
     const writer = makeWriter();
 
-    const exitCode = dispatch(['--help'], baseDispatchIo({ writer }));
+    const exitCode = await dispatch(['--help'], baseDispatchIo({ writer }));
 
     const help = writer.outLines.join('\n');
     for (const command of ALL_COMMANDS) {
@@ -149,12 +209,12 @@ describe('dispatch — --help / no-args (D-P5S-5 full command surface)', () => {
   // friendlier, common CLI convention here: no-args behaves exactly like
   // `--help` (stdout, exit 0) rather than being treated as an error -- see
   // the matching comment in dispatch.ts.
-  it('no args behaves the same as --help: stdout, exit 0', () => {
+  it('no args behaves the same as --help: stdout, exit 0', async () => {
     const helpWriter = makeWriter();
-    dispatch(['--help'], baseDispatchIo({ writer: helpWriter }));
+    await dispatch(['--help'], baseDispatchIo({ writer: helpWriter }));
 
     const noArgsWriter = makeWriter();
-    const exitCode = dispatch([], baseDispatchIo({ writer: noArgsWriter }));
+    const exitCode = await dispatch([], baseDispatchIo({ writer: noArgsWriter }));
 
     expect(noArgsWriter.outLines).toEqual(helpWriter.outLines);
     expect(noArgsWriter.errLines).toHaveLength(0);
@@ -162,27 +222,43 @@ describe('dispatch — --help / no-args (D-P5S-5 full command surface)', () => {
   });
 });
 
-describe('dispatch — placeholder commands (status/pause/resume/logout)', () => {
-  it.each(['status', 'pause', 'resume', 'logout'] as const)(
-    '"%s" prints a stderr message and exits 2 (needs the real Phase 5 daemon)',
-    (command) => {
+describe('dispatch — the one remaining placeholder command (D-P5B12-5)', () => {
+  it('"logout" prints a stderr message and exits 2 (held for the keychain open question)', async () => {
+    const writer = makeWriter();
+
+    const exitCode = await dispatch(['logout'], baseDispatchIo({ writer }));
+
+    expect(exitCode).toBe(2);
+    expect(writer.errLines.length).toBeGreaterThan(0);
+    expect(writer.errLines.join('\n')).toContain('logout');
+    expect(writer.outLines).toHaveLength(0);
+  });
+
+  it.each(['start', 'status', 'pause', 'resume'] as const)(
+    '"%s" is NOT a placeholder anymore: it routes to its real handler without touching stderr',
+    async (command) => {
       const writer = makeWriter();
+      const io = baseDispatchIo({
+        writer,
+        runStart: () => 0,
+        runStatus: () => 0,
+        runPause: () => 0,
+        runResume: () => 0,
+      });
 
-      const exitCode = dispatch([command], baseDispatchIo({ writer }));
+      const exitCode = await dispatch([command], io);
 
-      expect(exitCode).toBe(2);
-      expect(writer.errLines.length).toBeGreaterThan(0);
-      expect(writer.errLines.join('\n')).toContain(command);
-      expect(writer.outLines).toHaveLength(0);
+      expect(exitCode).toBe(0);
+      expect(writer.errLines).toHaveLength(0);
     },
   );
 });
 
 describe('dispatch — unknown command', () => {
-  it('prints help to stderr and exits 2', () => {
+  it('prints help to stderr and exits 2', async () => {
     const writer = makeWriter();
 
-    const exitCode = dispatch(['frobnicate'], baseDispatchIo({ writer }));
+    const exitCode = await dispatch(['frobnicate'], baseDispatchIo({ writer }));
 
     expect(exitCode).toBe(2);
     expect(writer.outLines).toHaveLength(0);
