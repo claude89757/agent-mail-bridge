@@ -59,7 +59,12 @@ import { validateConfig } from './config.js';
 import type { DoctorFileStat } from './doctor.js';
 import { checkCredentialsFileHygiene } from './doctor.js';
 import type { EnvLike } from './paths.js';
-import { expandTilde, resolveConfigPath, resolveDefaultDbPath } from './paths.js';
+import {
+  expandTilde,
+  resolveConfigPath,
+  resolveDefaultDbPath,
+  resolveDefaultWorktreesRoot,
+} from './paths.js';
 import { openDatabase } from '../store/database.js';
 import { MetaStore } from '../store/metaStore.js';
 
@@ -186,6 +191,11 @@ export function runSetup(args: readonly string[], io: SetupIo, now: Date): Setup
     selfAddress: flags.self,
     credentialsEnvFile: flags.credentialsEnvFile,
     dbPath: flags.dbPath ?? resolveDefaultDbPath(io.env, io.homedir),
+    // D-P5B12-1: like dbPath, worktreesRoot's default needs env/homedir, so
+    // it is resolved HERE (there is no dedicated flag yet — operators edit
+    // config.json for a custom value; projects/baseRef/pollIntervalSeconds
+    // get their pure defaults inside validateConfig itself).
+    worktreesRoot: resolveDefaultWorktreesRoot(io.env, io.homedir),
     mailbox: flags.mailbox,
     dryRun: flags.dryRun,
   };

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createIngest } from '../../src/application/ingest.js';
 import type { IngestConfig, IngestResult } from '../../src/application/ingest.js';
-import { normalizeMessageId } from '../../src/domain/mail.js';
+import { buildRegisterOutbox } from '../../src/daemon/replySender.js';
 import { filterNewUids } from '../../src/domain/uid.js';
 import { openDatabase } from '../../src/store/database.js';
 import { CommandStore } from '../../src/store/commandStore.js';
@@ -111,9 +111,11 @@ interface Harness {
 
 /**
  * Fresh in-memory store set + fake transport, wired together the way a real
- * daemon would wire them: the transport's `registerOutbox` callback creates
- * the outbox row BEFORE `send` resolves, using the same store the echo gate
- * reads from — so `reflectOutbound`/hand-built echo mail are recognized
+ * daemon would wire them: the transport's `registerOutbox` callback is the
+ * PRODUCTION `buildRegisterOutbox` (src/daemon/replySender.ts) — the same
+ * create-then-SENDING registration (over the normalized Message-ID) the real
+ * daemon performs before any SMTP submission — using the same store the echo
+ * gate reads from, so `reflectOutbound`/hand-built echo mail are recognized
  * exactly as production code would recognize a real self-reply.
  * `readyAt` is preset (`setReadyAtIfUnset`) so mail is not rejected
  * NO_READY_AT by default.
@@ -132,16 +134,7 @@ function setup(config: Partial<IngestConfig> = {}): Harness {
   const ingest = createIngest({ db, commandStore, intentStore, outboxStore, metaStore, config: fullConfig });
 
   const transport = new FakeMailTransport({
-    registerOutbox: (receipt, sentMail) => {
-      const normalized = normalizeMessageId(receipt.messageId);
-      outboxStore.create({
-        id: receipt.outboxId,
-        messageId: normalized ?? receipt.messageId,
-        commandId: sentMail.commandId,
-        kind: sentMail.kind,
-        now: AFTER_READY,
-      });
-    },
+    registerOutbox: buildRegisterOutbox({ db, outboxStore, clock: () => AFTER_READY }),
   });
 
   return { db, commandStore, intentStore, outboxStore, metaStore, transport, ingest };

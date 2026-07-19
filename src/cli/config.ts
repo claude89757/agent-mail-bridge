@@ -26,12 +26,27 @@ import { isAbsolute } from 'node:path';
 
 import type { TimeWindowConfig } from '../domain/timeWindow.js';
 
-import { expandTilde, resolveDefaultDbPath } from './paths.js';
+import { expandTilde, resolveDefaultDbPath, resolveDefaultWorktreesRoot } from './paths.js';
 import type { EnvLike } from './paths.js';
 
 /**
- * Config schema v1 (D-P5S-2). `timeWindow` reuses the domain type verbatim
- * — there is no separate CLI-only copy of its shape.
+ * Project-index configuration (D-P5B12-1): the allowlisted repo-root
+ * directories `buildProjectIndex` scans, plus optional alias → project-path
+ * mappings. Config-layer validation is SHAPE ONLY (non-empty strings) —
+ * realpath/existence/git-repo checks are `buildProjectIndex`'s runtime job
+ * (`src/application/projectIndex.ts`), deliberately not duplicated here.
+ */
+export interface ProjectsConfig {
+  readonly roots: readonly string[];
+  readonly aliases?: Readonly<Record<string, string>>;
+}
+
+/**
+ * Config schema v1 (D-P5S-2, extended additively by D-P5B12-1 — version
+ * stays 1: every new field is optional with a pinned default, so every
+ * pre-existing config file keeps loading unchanged). `timeWindow` reuses
+ * the domain type verbatim — there is no separate CLI-only copy of its
+ * shape.
  */
 export interface BridgeConfig {
   readonly version: 1;
@@ -51,6 +66,25 @@ export interface BridgeConfig {
   readonly credentialsEnvFile: string;
   /** SQLite store path. Defaults via `resolveDefaultDbPath` when omitted. */
   readonly dbPath: string;
+  /**
+   * Defaults to `{ roots: [] }` when omitted (D-P5B12-1): an empty index —
+   * every command routes to the no-match clarification stopgap until roots
+   * are configured.
+   */
+  readonly projects: ProjectsConfig;
+  /**
+   * Bridge-owned worktrees root. Defaults via `resolveDefaultWorktreesRoot`
+   * when omitted (D-P5B12-1) — the same fill-before-validate treatment as
+   * `dbPath`, because the default needs `env`/`homedir`.
+   */
+  readonly worktreesRoot: string;
+  /** Git ref dispatch bases new worktrees on. Defaults to `'HEAD'` (the
+   * target repository's current head at dispatch time, D-P5B12-1). */
+  readonly baseRef: string;
+  /** Daemon poll interval. Defaults to `30`; validated to an integer in
+   * `5..3600` (D-P5B12-1 — 30s keeps command-to-dispatch P95 under the
+   * spec's 60s without IDLE). */
+  readonly pollIntervalSeconds: number;
   /** Defaults to `"INBOX"` when omitted. */
   readonly mailbox: string;
   readonly timeWindow?: TimeWindowConfig;
@@ -67,10 +101,17 @@ const KNOWN_FIELDS = new Set<string>([
   'selfAddress',
   'credentialsEnvFile',
   'dbPath',
+  'projects',
+  'worktreesRoot',
+  'baseRef',
+  'pollIntervalSeconds',
   'mailbox',
   'timeWindow',
   'dryRun',
 ]);
+
+const POLL_INTERVAL_MIN = 5;
+const POLL_INTERVAL_MAX = 3600;
 
 const HHMM = /^\d{2}:\d{2}$/;
 const YYYY_MM_DD = /^\d{4}-\d{2}-\d{2}$/;
@@ -184,6 +225,56 @@ function validateTimeWindow(raw: unknown, errors: string[]): TimeWindowConfig | 
 }
 
 /**
+ * Validates a `projects` value against `ProjectsConfig`'s SHAPE (D-P5B12-1):
+ * `roots` a (possibly empty) array of non-empty strings, `aliases` — when
+ * present — a plain object whose keys and values are non-empty strings.
+ * Deliberately NOTHING more: whether a root exists, resolves, or contains
+ * git repositories is `buildProjectIndex`'s runtime concern
+ * (`src/application/projectIndex.ts`), and duplicating half of it here
+ * would let the two layers drift. Follows `validateTimeWindow`'s
+ * conventions: appends to the shared `errors` array, returns `undefined`
+ * whenever it appended anything.
+ */
+function validateProjects(raw: unknown, errors: string[]): ProjectsConfig | undefined {
+  if (!isPlainObject(raw)) {
+    errors.push(`projects: must be an object, got ${describeType(raw)}`);
+    return undefined;
+  }
+
+  const before = errors.length;
+
+  const roots = raw.roots;
+  if (!Array.isArray(roots) || !roots.every((r) => typeof r === 'string' && r.length > 0)) {
+    errors.push('projects.roots: must be an array of non-empty strings');
+  }
+
+  const aliases = raw.aliases;
+  if (aliases !== undefined) {
+    if (!isPlainObject(aliases)) {
+      errors.push(`projects.aliases: must be an object, got ${describeType(aliases)}`);
+    } else {
+      for (const [key, value] of Object.entries(aliases)) {
+        if (key.trim().length === 0) {
+          errors.push('projects.aliases: alias names must be non-empty strings');
+        }
+        if (typeof value !== 'string' || value.length === 0) {
+          errors.push(`projects.aliases.${key}: must be a non-empty string (project path)`);
+        }
+      }
+    }
+  }
+
+  if (errors.length > before) {
+    return undefined;
+  }
+
+  return {
+    roots: roots as string[],
+    ...(aliases !== undefined ? { aliases: aliases as Record<string, string> } : {}),
+  };
+}
+
+/**
  * Validates already-`JSON.parse`d config data against schema v1. Fails
  * closed: an unrecognized top-level field is a hard error (rejected, never
  * silently ignored), and every branch names the offending field's JSON
@@ -191,10 +282,13 @@ function validateTimeWindow(raw: unknown, errors: string[]): TimeWindowConfig | 
  * of stopping at the first, so `setup` (Task 4) can list every problem in
  * one pass.
  *
- * `dbPath` is REQUIRED here (unlike in an on-disk config file, where it may
- * be omitted): the XDG-based default needs `env`/`homedir`, which this pure
- * function deliberately never reads — `loadConfig` fills `dbPath` in BEFORE
- * calling this function whenever the parsed JSON omits it.
+ * `dbPath` and `worktreesRoot` are REQUIRED here (unlike in an on-disk
+ * config file, where either may be omitted): their XDG-based defaults need
+ * `env`/`homedir`, which this pure function deliberately never reads —
+ * `loadConfig` fills both in BEFORE calling this function whenever the
+ * parsed JSON omits them. `projects`/`baseRef`/`pollIntervalSeconds`
+ * (D-P5B12-1) have PURE defaults and are therefore defaulted right here,
+ * like `mailbox`/`dryRun`.
  */
 export function validateConfig(raw: unknown): ConfigResult {
   if (!isPlainObject(raw)) {
@@ -251,6 +345,36 @@ export function validateConfig(raw: unknown): ConfigResult {
     );
   }
 
+  const worktreesRoot = raw.worktreesRoot;
+  if (typeof worktreesRoot !== 'string' || worktreesRoot.length === 0) {
+    errors.push('worktreesRoot: must be a non-empty string');
+  } else if (!isAbsoluteOrTildePath(worktreesRoot)) {
+    errors.push(
+      `worktreesRoot: must be an absolute path or start with "~/" (got ${JSON.stringify(worktreesRoot)})`,
+    );
+  }
+
+  const baseRef = raw.baseRef;
+  if (baseRef !== undefined && (typeof baseRef !== 'string' || baseRef.length === 0)) {
+    errors.push('baseRef: must be a non-empty string');
+  }
+
+  const pollIntervalSeconds = raw.pollIntervalSeconds;
+  if (
+    pollIntervalSeconds !== undefined &&
+    (typeof pollIntervalSeconds !== 'number' ||
+      !Number.isInteger(pollIntervalSeconds) ||
+      pollIntervalSeconds < POLL_INTERVAL_MIN ||
+      pollIntervalSeconds > POLL_INTERVAL_MAX)
+  ) {
+    errors.push(
+      `pollIntervalSeconds: must be an integer between ${String(POLL_INTERVAL_MIN)} and ` +
+        `${String(POLL_INTERVAL_MAX)} (got ${JSON.stringify(pollIntervalSeconds)})`,
+    );
+  }
+
+  const projects = raw.projects === undefined ? undefined : validateProjects(raw.projects, errors);
+
   const mailbox = raw.mailbox;
   if (mailbox !== undefined && (typeof mailbox !== 'string' || mailbox.length === 0)) {
     errors.push('mailbox: must be a non-empty string');
@@ -275,6 +399,10 @@ export function validateConfig(raw: unknown): ConfigResult {
       selfAddress: selfAddress as string,
       credentialsEnvFile: credentialsEnvFile as string,
       dbPath: dbPath as string,
+      projects: projects ?? { roots: [] },
+      worktreesRoot: worktreesRoot as string,
+      baseRef: typeof baseRef === 'string' ? baseRef : 'HEAD',
+      pollIntervalSeconds: typeof pollIntervalSeconds === 'number' ? pollIntervalSeconds : 30,
       mailbox: typeof mailbox === 'string' ? mailbox : 'INBOX',
       dryRun: typeof dryRun === 'boolean' ? dryRun : false,
       ...(timeWindow !== undefined ? { timeWindow } : {}),
@@ -300,16 +428,44 @@ function describeError(error: unknown): string {
 }
 
 /**
- * Fills in the XDG-based default `dbPath` BEFORE validation, ONLY when the
- * parsed config is a plain object that omits it entirely. An explicit
- * `dbPath` — including an explicitly-invalid one, so `validateConfig` can
- * report it — always passes through untouched.
+ * Fills in the XDG-based default `dbPath`/`worktreesRoot` BEFORE
+ * validation, each ONLY when the parsed config is a plain object that
+ * omits that field entirely. An explicit value — including an
+ * explicitly-invalid one, so `validateConfig` can report it — always
+ * passes through untouched.
  */
-function applyDbPathDefault(parsed: unknown, io: LoadConfigIo): unknown {
-  if (!isPlainObject(parsed) || parsed.dbPath !== undefined) {
+function applyEnvBasedDefaults(parsed: unknown, io: LoadConfigIo): unknown {
+  if (!isPlainObject(parsed)) {
     return parsed;
   }
-  return { ...parsed, dbPath: resolveDefaultDbPath(io.env, io.homedir) };
+  return {
+    ...parsed,
+    ...(parsed.dbPath === undefined ? { dbPath: resolveDefaultDbPath(io.env, io.homedir) } : {}),
+    ...(parsed.worktreesRoot === undefined
+      ? { worktreesRoot: resolveDefaultWorktreesRoot(io.env, io.homedir) }
+      : {}),
+  };
+}
+
+/**
+ * Tilde expansion for the D-P5B12-1 `projects` block: every root and every
+ * alias TARGET (a project path) — never alias NAMES, which are lookup
+ * terms, not paths. Same load-time-only expansion stance as
+ * `credentialsEnvFile`/`dbPath` (see `loadConfig`'s return): the on-disk
+ * config keeps its `~/` forms.
+ */
+function expandProjectsTildes(projects: ProjectsConfig, homedir: string): ProjectsConfig {
+  const aliases = projects.aliases;
+  return {
+    roots: projects.roots.map((root) => expandTilde(root, homedir)),
+    ...(aliases !== undefined
+      ? {
+          aliases: Object.fromEntries(
+            Object.entries(aliases).map(([name, target]) => [name, expandTilde(target, homedir)]),
+          ),
+        }
+      : {}),
+  };
 }
 
 /**
@@ -333,7 +489,7 @@ export function loadConfig(path: string, io: LoadConfigIo): ConfigResult {
     return { ok: false, errors: [`config: invalid JSON in ${path}: ${describeError(error)}`] };
   }
 
-  const validated = validateConfig(applyDbPathDefault(parsed, io));
+  const validated = validateConfig(applyEnvBasedDefaults(parsed, io));
   if (!validated.ok) {
     return validated;
   }
@@ -344,6 +500,8 @@ export function loadConfig(path: string, io: LoadConfigIo): ConfigResult {
       ...validated.config,
       credentialsEnvFile: expandTilde(validated.config.credentialsEnvFile, io.homedir),
       dbPath: expandTilde(validated.config.dbPath, io.homedir),
+      worktreesRoot: expandTilde(validated.config.worktreesRoot, io.homedir),
+      projects: expandProjectsTildes(validated.config.projects, io.homedir),
     },
   };
 }

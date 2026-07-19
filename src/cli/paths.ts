@@ -51,6 +51,21 @@ export function resolveDefaultDbPath(env: EnvLike, homedir: string): string {
 }
 
 /**
+ * Default bridge-owned worktrees root (D-P5B12-1):
+ * `$XDG_DATA_HOME/agent-mail-bridge/worktrees`, falling back to
+ * `<homedir>/.local/share/agent-mail-bridge/worktrees` — the SAME data
+ * directory `resolveDefaultDbPath` uses, so the two bridge-owned artifact
+ * families (the SQLite store and task worktrees) sit side by side under one
+ * predictable parent. Only used to fill in `BridgeConfig.worktreesRoot`
+ * when a config file omits it — an explicit value always wins (see
+ * `src/cli/config.ts`, mirroring `dbPath`'s treatment).
+ */
+export function resolveDefaultWorktreesRoot(env: EnvLike, homedir: string): string {
+  const base = readXdgVar(env, 'XDG_DATA_HOME') ?? join(homedir, '.local', 'share');
+  return join(base, APP_DIR, 'worktrees');
+}
+
+/**
  * Expands a leading `~/` to `homedir`. Does NOT validate or reject
  * anything: a path with no leading `~/` — absolute or relative alike —
  * passes through completely unchanged. Rejecting relative paths is

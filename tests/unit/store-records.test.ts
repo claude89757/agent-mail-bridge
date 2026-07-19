@@ -677,6 +677,37 @@ describe('MetaStore (D-P2-10)', () => {
     expect(store.getWatermark('INBOX', '1690000001')).toBe(0);
     expect(store.getWatermark('INBOX', '1690000000')).toBe(100);
   });
+
+  // --- D-P5B12-2: pause flag as a plain meta KV key (no migration) ---
+
+  describe('getPaused / setPaused (D-P5B12-2)', () => {
+    it('getPaused is false on a fresh database (default: not paused)', () => {
+      expect(store.getPaused()).toBe(false);
+    });
+
+    it('setPaused(true) then setPaused(false) round-trips through getPaused', () => {
+      store.setPaused(true, '2026-07-19T00:00:00.000Z');
+      expect(store.getPaused()).toBe(true);
+
+      store.setPaused(false, '2026-07-19T00:01:00.000Z');
+      expect(store.getPaused()).toBe(false);
+    });
+
+    it('paused state persists across MetaStore instances on the same database (CLI writes, daemon reads)', () => {
+      store.setPaused(true, '2026-07-19T00:00:00.000Z');
+
+      expect(new MetaStore(db).getPaused()).toBe(true);
+    });
+
+    it('setPaused never disturbs readyAt (separate keys in the same KV table)', () => {
+      store.setReadyAtIfUnset('2026-07-17T00:00:00.000Z');
+
+      store.setPaused(true, '2026-07-19T00:00:00.000Z');
+
+      expect(store.getReadyAt()).toBe('2026-07-17T00:00:00.000Z');
+      expect(store.getPaused()).toBe(true);
+    });
+  });
 });
 
 // Guards decision D-P4B4-3 (clarification binding persistence, Phase 4

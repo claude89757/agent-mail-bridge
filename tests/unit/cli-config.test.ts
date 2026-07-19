@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { loadConfig, validateConfig } from '../../src/cli/config.js';
 import type { LoadConfigIo } from '../../src/cli/config.js';
-import { resolveDefaultDbPath } from '../../src/cli/paths.js';
+import { resolveDefaultDbPath, resolveDefaultWorktreesRoot } from '../../src/cli/paths.js';
 
 // Guards decision D-P5S-2 (config schema v1 + loader). `homedir`/`env` are
 // always fixed fake values, never the real process.env / os.homedir() —
@@ -17,6 +17,7 @@ function validRaw(overrides: Record<string, unknown> = {}): Record<string, unkno
     selfAddress: 'bridge-user@example.com',
     credentialsEnvFile: '/fake-home/.secrets/amb-test.env',
     dbPath: '/fake-home/.local/share/agent-mail-bridge/bridge.db',
+    worktreesRoot: '/fake-home/.local/share/agent-mail-bridge/worktrees',
     mailbox: 'INBOX',
     dryRun: false,
     ...overrides,
@@ -44,6 +45,10 @@ describe('validateConfig (D-P5S-2)', () => {
         selfAddress: 'bridge-user@example.com',
         credentialsEnvFile: '/fake-home/.secrets/amb-test.env',
         dbPath: '/fake-home/.local/share/agent-mail-bridge/bridge.db',
+        worktreesRoot: '/fake-home/.local/share/agent-mail-bridge/worktrees',
+        projects: { roots: [] },
+        baseRef: 'HEAD',
+        pollIntervalSeconds: 30,
         mailbox: 'INBOX',
         dryRun: false,
         timeWindow: {
@@ -87,6 +92,147 @@ describe('validateConfig (D-P5S-2)', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.config.dryRun).toBe(false);
+    }
+  });
+
+  // --- D-P5B12-1: daemon-facing additive fields (version stays 1) ---
+
+  it('defaults projects to { roots: [] }, baseRef to "HEAD" and pollIntervalSeconds to 30 when omitted', () => {
+    const result = validateConfig(validRaw());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.config.projects).toEqual({ roots: [] });
+      expect(result.config.baseRef).toBe('HEAD');
+      expect(result.config.pollIntervalSeconds).toBe(30);
+    }
+  });
+
+  it('accepts a fully-specified projects value (roots + aliases) and passes it through', () => {
+    const result = validateConfig(
+      validRaw({
+        projects: {
+          roots: ['/fake-home/github'],
+          aliases: { alpha: '/fake-home/github/proj-a' },
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.config.projects).toEqual({
+        roots: ['/fake-home/github'],
+        aliases: { alpha: '/fake-home/github/proj-a' },
+      });
+    }
+  });
+
+  it('accepts projects with roots only (aliases optional, stays absent)', () => {
+    const result = validateConfig(validRaw({ projects: { roots: ['/fake-home/github'] } }));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.config.projects).toEqual({ roots: ['/fake-home/github'] });
+      expect(result.config.projects.aliases).toBeUndefined();
+    }
+  });
+
+  it('rejects a projects value that is not an object, naming the field path', () => {
+    const result = validateConfig(validRaw({ projects: 'nope' }));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.startsWith('projects:'))).toBe(true);
+    }
+  });
+
+  it('rejects projects.roots missing or not an array, naming the field path', () => {
+    for (const projects of [{}, { roots: 'not-an-array' }]) {
+      const result = validateConfig(validRaw({ projects }));
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.some((e) => e.startsWith('projects.roots:'))).toBe(true);
+      }
+    }
+  });
+
+  it('rejects a projects.roots element that is empty or not a string (shape only — existence checks are buildProjectIndex runtime concerns)', () => {
+    for (const roots of [[''], ['/ok', 42]]) {
+      const result = validateConfig(validRaw({ projects: { roots } }));
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.some((e) => e.startsWith('projects.roots:'))).toBe(true);
+      }
+    }
+  });
+
+  it('rejects projects.aliases that is not an object, and an alias whose target is empty or not a string', () => {
+    const cases: readonly unknown[] = [
+      ['not', 'an', 'object'],
+      { alpha: '' },
+      { alpha: 42 },
+    ];
+    for (const aliases of cases) {
+      const result = validateConfig(validRaw({ projects: { roots: ['/ok'], aliases } }));
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.some((e) => e.startsWith('projects.aliases'))).toBe(true);
+      }
+    }
+  });
+
+  it('rejects an empty worktreesRoot and a relative worktreesRoot, naming the field path', () => {
+    for (const worktreesRoot of ['', 'relative/worktrees']) {
+      const result = validateConfig(validRaw({ worktreesRoot }));
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.some((e) => e.startsWith('worktreesRoot:'))).toBe(true);
+      }
+    }
+  });
+
+  it('accepts a ~/-prefixed worktreesRoot at the shape-validation level', () => {
+    const result = validateConfig(validRaw({ worktreesRoot: '~/wt' }));
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects an empty or non-string baseRef, naming the field path', () => {
+    for (const baseRef of ['', 42]) {
+      const result = validateConfig(validRaw({ baseRef }));
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.some((e) => e.startsWith('baseRef:'))).toBe(true);
+      }
+    }
+  });
+
+  it('accepts pollIntervalSeconds at the 5 and 3600 boundaries', () => {
+    for (const pollIntervalSeconds of [5, 3600]) {
+      const result = validateConfig(validRaw({ pollIntervalSeconds }));
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.config.pollIntervalSeconds).toBe(pollIntervalSeconds);
+      }
+    }
+  });
+
+  it('rejects pollIntervalSeconds outside 5..3600 or not an integer, naming the field path and value', () => {
+    for (const pollIntervalSeconds of [4, 3601, 30.5, '30', true]) {
+      const result = validateConfig(validRaw({ pollIntervalSeconds }));
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        const error = result.errors.find((e) => e.startsWith('pollIntervalSeconds:'));
+        expect(error).toBeDefined();
+        expect(error).toContain(JSON.stringify(pollIntervalSeconds));
+      }
     }
   });
 
@@ -448,6 +594,57 @@ describe('loadConfig (D-P5S-2)', () => {
       expect(result.config.dbPath).toBe(
         '/another-fake-home/.local/share/agent-mail-bridge/bridge.db',
       );
+    }
+  });
+
+  // --- D-P5B12-1: worktreesRoot default + tilde expansion for the new
+  // path-carrying fields ---
+
+  it('resolves the default worktreesRoot via XDG_DATA_HOME/homedir when the config omits it', () => {
+    const raw = validRaw();
+    delete raw.worktreesRoot;
+    const env = { XDG_DATA_HOME: '/fake-xdg-data' };
+    const io = fakeIo({ [CONFIG_PATH]: JSON.stringify(raw) }, { env });
+
+    const result = loadConfig(CONFIG_PATH, io);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.config.worktreesRoot).toBe(resolveDefaultWorktreesRoot(env, HOME));
+    }
+  });
+
+  it('still rejects an explicit-but-invalid worktreesRoot even though omitted values get a default', () => {
+    const raw = validRaw({ worktreesRoot: 'relative/worktrees' });
+    const io = fakeIo({ [CONFIG_PATH]: JSON.stringify(raw) });
+
+    const result = loadConfig(CONFIG_PATH, io);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.startsWith('worktreesRoot:'))).toBe(true);
+    }
+  });
+
+  it('expands ~/ in worktreesRoot, projects.roots elements and projects.aliases targets', () => {
+    const raw = validRaw({
+      worktreesRoot: '~/wt',
+      projects: {
+        roots: ['~/github', '/already/absolute'],
+        aliases: { alpha: '~/github/proj-a' },
+      },
+    });
+    const io = fakeIo({ [CONFIG_PATH]: JSON.stringify(raw) }, { homedir: '/another-fake-home' });
+
+    const result = loadConfig(CONFIG_PATH, io);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.config.worktreesRoot).toBe('/another-fake-home/wt');
+      expect(result.config.projects).toEqual({
+        roots: ['/another-fake-home/github', '/already/absolute'],
+        aliases: { alpha: '/another-fake-home/github/proj-a' },
+      });
     }
   });
 });

@@ -7,10 +7,12 @@ import type { ProjectEntry, ProjectIndex } from '../../src/application/projectIn
 import type { DriverEvent } from '../../src/drivers/types.js';
 import { buildRegisterOutbox } from '../../src/daemon/replySender.js';
 import {
+  dispatchReadyCommand,
   recoverInterruptedIntents,
   runMailTick,
   runOrphanTick,
   sweepExpiredClarifications,
+  sweepStrandedSending,
 } from '../../src/daemon/ticks.js';
 import type { MailTickDeps } from '../../src/daemon/ticks.js';
 import { openDatabase } from '../../src/store/database.js';
@@ -737,6 +739,113 @@ describe('runOrphanTick (D-P4B11-3)', () => {
 
     expect(report.finalized).toEqual([{ intentId: 'di-gone', reason: 'ORPHAN_MAIL_GONE' }]);
     expect(harness.intentStore.getById('di-gone')?.statusReason).toBe('ORPHAN_MAIL_GONE');
+  });
+});
+
+// D-P5B12-2: register-then-crash residue (SENDING rows with no in-flight
+// send left to settle them) is swept onto the reconciliation track at
+// startup — UNCERTAIN is the only honest state (whether SMTP happened is
+// unknowable), and the echo pass is its only exit.
+describe('sweepStrandedSending (D-P5B12-2)', () => {
+  it('moves every SENDING row to UNCERTAIN and leaves PENDING/SENT/UNCERTAIN rows untouched', () => {
+    const harness = setup();
+    const now = harness.clock();
+    const mk = (id: string, msg: string): void => {
+      harness.outboxStore.create({
+        id,
+        messageId: msg,
+        commandId: null,
+        kind: 'RESULT',
+        now,
+      });
+    };
+    mk('ob-stranded-1', 'stranded-1@example.com');
+    harness.outboxStore.transition('ob-stranded-1', 'SENDING', now);
+    mk('ob-stranded-2', 'stranded-2@example.com');
+    harness.outboxStore.transition('ob-stranded-2', 'SENDING', now);
+    mk('ob-pending', 'pending@example.com');
+    mk('ob-sent', 'sent@example.com');
+    harness.outboxStore.transition('ob-sent', 'SENDING', now);
+    harness.outboxStore.transition('ob-sent', 'SENT', now);
+    mk('ob-uncertain', 'uncertain@example.com');
+    harness.outboxStore.transition('ob-uncertain', 'SENDING', now);
+    harness.outboxStore.transition('ob-uncertain', 'UNCERTAIN', now);
+
+    const result = sweepStrandedSending({ outboxStore: harness.outboxStore, clock: harness.clock });
+
+    expect(result.swept).toEqual(['ob-stranded-1', 'ob-stranded-2']);
+    expect(harness.outboxStore.findByStatus('SENDING')).toEqual([]);
+    expect(harness.outboxStore.findByStatus('UNCERTAIN').map((row) => row.id)).toEqual([
+      'ob-stranded-1',
+      'ob-stranded-2',
+      'ob-uncertain',
+    ]);
+    expect(harness.outboxStore.findByStatus('PENDING').map((row) => row.id)).toEqual(['ob-pending']);
+    expect(harness.outboxStore.findByStatus('SENT').map((row) => row.id)).toEqual(['ob-sent']);
+  });
+
+  it('is a no-op with no SENDING rows', () => {
+    const harness = setup();
+
+    const result = sweepStrandedSending({ outboxStore: harness.outboxStore, clock: harness.clock });
+
+    expect(result.swept).toEqual([]);
+  });
+
+  it('a swept row is reconcilable: a later echo of its Message-ID confirms it SENT (the one exit from UNCERTAIN)', async () => {
+    const harness = setup();
+    const now = harness.clock();
+    harness.outboxStore.create({
+      id: 'ob-recover',
+      messageId: 'recover-me@example.com',
+      commandId: null,
+      kind: 'RESULT',
+      now,
+    });
+    harness.outboxStore.transition('ob-recover', 'SENDING', now);
+    sweepStrandedSending({ outboxStore: harness.outboxStore, clock: harness.clock });
+
+    harness.transport.reflectOutbound(
+      { outboxId: 'ob-recover', messageId: '<recover-me@example.com>' },
+      '2026-07-18T12:00:00.000Z',
+    );
+    const report = await runMailTick(harness.deps);
+
+    expect(report.outcomes.echo).toBe(1);
+    expect(harness.outboxStore.findByMessageId('recover-me@example.com')?.status).toBe('SENT');
+  });
+});
+
+// Review-minor ① (batch-11): the alreadyTold dedupe INSIDE the dispatch glue,
+// reached directly — both tick entry points shield it (the mail tick via
+// Message-ID dedupe, the orphan tick via its CLARIFICATION_HELD pre-check),
+// so only a direct second call proves the in-glue check itself works.
+describe('dispatchReadyCommand alreadyTold dedupe (direct, D-P5B12-2)', () => {
+  it('second direct call for the same clarification-needed command sends NOTHING (reply null, zero new mail)', async () => {
+    const harness = setup({ script: [] });
+    const mail = commandMail({
+      messageId: '<lost-direct@example.com>',
+      headers: new Map([['subject', ['unknown-proj do something']]]),
+    });
+    harness.transport.deliver(mail);
+    harness.ingestDirect(mail);
+    const intentId = intentIdOf('<lost-direct@example.com>');
+    const command = harness.commandStore.getByMessageId('lost-direct@example.com');
+    if (command === null) {
+      throw new Error('test fixture bug: command row missing after ingest');
+    }
+
+    const first = await dispatchReadyCommand(harness.deps, mail, command.id, intentId);
+    expect(first.executed).toBe(false);
+    expect(first.reply).toEqual({ outboxId: 'fake-outbox-1', status: 'SENT' });
+    expect(harness.transport.sentMails).toHaveLength(1);
+
+    const second = await dispatchReadyCommand(harness.deps, mail, command.id, intentId);
+
+    expect(second.executed).toBe(false);
+    expect(second.reply).toBeNull();
+    expect(harness.transport.sentMails).toHaveLength(1);
+    expect(harness.intentStore.getById(intentId)?.status).toBe('PENDING');
   });
 });
 

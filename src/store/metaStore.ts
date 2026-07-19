@@ -13,10 +13,21 @@
  * current value is a no-op. A new `uidValidity` (the IMAP server invalidated
  * and reissued UIDs for the mailbox) starts back at 0, which is what lets a
  * bounded rescan happen safely instead of skipping mail.
+ *
+ * The pause flag (D-P5B12-2) is two more plain KV rows in the SAME `meta`
+ * table — no migration: `paused` holds `'1'`/`'0'` (absent = not paused,
+ * the fail-open-to-normal-operation default a fresh install needs), and
+ * `pausedChangedAt` records when the flag last changed (the caller-supplied
+ * `now`, this store's house convention for time). The daemon shell reads
+ * `getPaused` once per poll round and the CLI writes `setPaused` — there is
+ * no IPC, so a write takes effect within one poll interval, never
+ * immediately.
  */
 import type { Database } from 'better-sqlite3';
 
 const READY_AT_KEY = 'readyAt';
+const PAUSED_KEY = 'paused';
+const PAUSED_CHANGED_AT_KEY = 'pausedChangedAt';
 
 export class MetaStore {
   private readonly db: Database;
@@ -49,6 +60,30 @@ export class MetaStore {
       throw new Error('metaStore.setReadyAtIfUnset: readyAt missing immediately after upsert');
     }
     return effective;
+  }
+
+  /** `true` iff the `paused` meta row exists and holds `'1'` — an absent
+   *  row (fresh install, pre-batch-12 database) reads as not paused. */
+  getPaused(): boolean {
+    const row = this.db
+      .prepare<[string], { value: string }>(`SELECT value FROM meta WHERE key = ?`)
+      .get(PAUSED_KEY);
+    return row?.value === '1';
+  }
+
+  /**
+   * Plain last-write-wins UPSERTs (unlike `setReadyAtIfUnset`'s
+   * first-write-wins): pausing and resuming are ordinary reversible
+   * operator actions. `now` lands in `pausedChangedAt` so `status` can
+   * honestly report when the flag last changed.
+   */
+  setPaused(paused: boolean, now: string): void {
+    const upsert = this.db.prepare<{ key: string; value: string }>(
+      `INSERT INTO meta (key, value) VALUES (@key, @value)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    );
+    upsert.run({ key: PAUSED_KEY, value: paused ? '1' : '0' });
+    upsert.run({ key: PAUSED_CHANGED_AT_KEY, value: now });
   }
 
   getWatermark(mailbox: string, uidValidity: string): number {

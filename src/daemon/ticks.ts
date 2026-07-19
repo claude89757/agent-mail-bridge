@@ -136,6 +136,31 @@ export function recoverInterruptedIntents(deps: RecoverInterruptedDeps): {
   return { recovered };
 }
 
+export interface SweepStrandedDeps {
+  outboxStore: OutboxStore;
+  clock(): string;
+}
+
+/**
+ * Startup-only, run directly after `recoverInterruptedIntents` (D-P5B12-2,
+ * batch-11 handover #1): every SENDING outbox row found at boot is
+ * register-then-crash residue — the row was recorded, and whether the SMTP
+ * submission then happened is unknowable, exactly the state UNCERTAIN
+ * exists to name. Never a resend: the mail tick's echo pass is UNCERTAIN's
+ * ONLY exit (echo arrives ⇒ SENT; no echo ever ⇒ the row stays UNCERTAIN
+ * permanently, awaiting a human — `status` surfaces the count). One clock
+ * draw covers the whole sweep, mirroring `sweepExpiredClarifications`.
+ */
+export function sweepStrandedSending(deps: SweepStrandedDeps): { swept: readonly string[] } {
+  const now = deps.clock();
+  const swept: string[] = [];
+  for (const row of deps.outboxStore.findByStatus('SENDING')) {
+    deps.outboxStore.transition(row.id, 'UNCERTAIN', now);
+    swept.push(row.id);
+  }
+  return { swept };
+}
+
 export interface SweepExpiredDeps {
   clarificationStore: ClarificationStore;
   clock(): string;
@@ -255,8 +280,15 @@ function finalizePendingIntent(
  * One READY command mail, end to end: extract → dispatch → compose →
  * sendReply. Returns whether the driver EXECUTED and the reply's send
  * result (`null` when the stopgap dedupe skipped replying).
+ *
+ * Exported (D-P5B12-2, review-minor ① of batch 11) so the in-glue
+ * alreadyTold double-check can be tested DIRECTLY: both tick entry points
+ * shield it (the mail tick via Message-ID dedupe, the orphan tick via its
+ * CLARIFICATION_HELD pre-check), so only a direct second call proves this
+ * defense-in-depth layer works on its own. Production callers remain the
+ * two ticks in this file.
  */
-async function dispatchReadyCommand(
+export async function dispatchReadyCommand(
   deps: OrphanTickDeps,
   mail: IncomingMail,
   commandId: number,
