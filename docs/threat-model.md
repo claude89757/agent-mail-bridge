@@ -117,6 +117,18 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
 - **C6 — Execution ceiling.** `codex exec --sandbox workspace-write` maximum;
   `danger-full-access` and `--dangerously-bypass-*` are forbidden; mail cannot
   change model, sandbox, or approval settings.
+  *Evidence (partial):* `CodexDriver` builds its argv as a fixed array —
+  element-exact-equality tests pin `--sandbox workspace-write` on task
+  start and the ABSENCE of every forbidden flag (`--dangerously-*`,
+  `danger-full-access`, and `--ephemeral`, which would break resume); the
+  resume argv carries no sandbox flag at all because the sandbox is fixed
+  at session creation (ADR-0004's measured option asymmetry — mail could
+  not lower it later even if it tried). A resume session id must match a
+  lowercase-UUID whitelist before it may enter the argv (no shell anywhere,
+  prompt is a single argv element), and `dryRun` reaching the driver throws
+  without spawning (`src/drivers/codexDriver.ts`,
+  `tests/unit/codex-driver.test.ts`). Real-task E2E remains user-gated
+  (red line 5).
 - **C7 — Worktree isolation.** Writes happen only in bridge-owned worktrees
   created from an explicit base commit under a controlled root; the user's
   worktrees and uncommitted changes are never touched; merging back is a local,
@@ -174,7 +186,14 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   CRLF header injection is neutralized by nodemailer's header encoding
   (review-verified at 9.0.3, documented at `buildDefaultSmtpSend`).
   Size caps and content redaction remain the reply-composition batch's
-  scope.
+  scope — and that batch inherits one NON-OPTIONAL obligation (batch-6
+  review finding): `CodexDriver` scrubs local paths from its synthesized
+  `failed` errorText only; `agent-message` text and `tool-activity`
+  summaries flow through UNSCRUBBED by design (the agent talks about real
+  worktree files). The reply-composition layer MUST apply cwd/home
+  scrubbing to ALL driver-event text before any of it enters a mail body,
+  with tests — otherwise red line 2 fails silently at the first status
+  reply.
 - **C10 — Credential hygiene.** App password in the OS keychain (macOS;
   Linux story tracked as an open question), never in git/logs/replies; public
   repo enforces secret scanning in CI from day one.
