@@ -15,9 +15,9 @@
  *
  * TWO SAFETY GATES, both required (belt and suspenders):
  *   1. `loadLiveCreds()` (`tests/helpers/liveCreds.ts`) must resolve real
- *      credentials from `~/.secrets/amb-test.env` (its DEFAULT path — this
- *      file is the ONLY place in the whole test suite allowed to call it
- *      with no injected `baseDir`).
+ *      credentials from `~/.secrets/amb-test.env` (its DEFAULT path — only
+ *      the live suites, this file and `tests/live/smtp-send-live.test.ts`,
+ *      may call it with no injected `baseDir`).
  *   2. `process.env.AMB_LIVE_TEST` must be exactly `'1'`.
  *
  * WHY gate 2 exists on top of gate 1: `loadLiveCreds()`'s default path is
@@ -89,8 +89,9 @@ const liveEnabled = process.env.AMB_LIVE_TEST === '1';
 // Module scope, DEFAULT (real) path — see the "IMPLEMENTATION NOTE" above.
 // Gated behind `liveEnabled` so a plain `pnpm test` (CI, any dev machine)
 // never even READS the real secrets path, not merely never uses it. Never
-// resolve the default path anywhere else in the test suite: every other
-// caller of `loadLiveCreds` injects a temp-dir `baseDir`
+// resolve the default path outside the live suites (this file and
+// tests/live/smtp-send-live.test.ts): every other caller of
+// `loadLiveCreds` injects a temp-dir `baseDir`
 // (see tests/unit/live-creds.test.ts).
 const creds = liveEnabled ? loadLiveCreds() : null;
 

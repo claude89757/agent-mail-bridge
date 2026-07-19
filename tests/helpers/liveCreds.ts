@@ -17,10 +17,11 @@
  * call site, everything else takes them as parameters so tests can pin
  * fixed values). Every test in `tests/unit/live-creds.test.ts` passes a
  * temp-dir fixture with placeholder values, never the real default. Only
- * `tests/live/imap-read-live.test.ts` calls `loadLiveCreds()` with no
- * argument, and only once, at module scope, outside any `describe`/`it`
- * body a skip could bypass — see that file's header comment for the full
- * safety argument (the `AMB_LIVE_TEST` env-var gate).
+ * the two live suites (`tests/live/imap-read-live.test.ts` and
+ * `tests/live/smtp-send-live.test.ts`) call `loadLiveCreds()` with no
+ * argument, each exactly once, at module scope, gated behind an explicit
+ * env-var opt-in — see each file's header comment for its full safety
+ * argument (`AMB_LIVE_TEST`, plus `AMB_LIVE_SEND` for the send suite).
  *
  * `no-console` (house eslint rule) applies to this file same as `src/`: it
  * must never become a hidden logging backdoor for credential values.
