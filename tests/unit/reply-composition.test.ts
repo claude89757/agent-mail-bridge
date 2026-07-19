@@ -460,6 +460,36 @@ describe('composeDispatchFailedReply (D-P4B9-3)', () => {
     expect(mail.bodyRedacted).toContain('❌ dispatch failed (WORKTREE)');
     expect(mail.bodyRedacted).toContain('error:\nWORKTREE_MISSING');
   });
+
+  // D-P4B11 stage-union extension (additive — the dispatch pipeline's own
+  // three-valued union is untouched; these two members exist for the daemon):
+  // 'EXTRACTION' = the mail's threadKey/prompt could not be extracted,
+  // 'ROUTING' = the clarification stopgap's one-time cannot-route notice.
+  it("renders the daemon's EXTRACTION stage like any other (additive union member)", () => {
+    const mail = composeDispatchFailedReply(replyContext({ projectName: null }), {
+      stage: 'EXTRACTION',
+      reason: 'EXTRACTION_INCOMPLETE: missing prompt',
+    });
+
+    expect(mail.kind).toBe('ERROR');
+    expect(mail.bodyRedacted).toContain('❌ dispatch failed (EXTRACTION)');
+    expect(mail.bodyRedacted).toContain('error:\nEXTRACTION_INCOMPLETE: missing prompt');
+    expect(mail.bodyRedacted).toContain('project: (unknown)');
+  });
+
+  it("renders the daemon's ROUTING stage with a names-only candidate reason (batch-9 discipline: never a path)", () => {
+    const mail = composeDispatchFailedReply(replyContext(), {
+      stage: 'ROUTING',
+      reason: 'cannot route: ambiguous (2 candidates: proj-a, proj-alpha)',
+    });
+
+    expect(mail.kind).toBe('ERROR');
+    expect(mail.bodyRedacted).toContain('❌ dispatch failed (ROUTING)');
+    expect(mail.bodyRedacted).toContain(
+      'error:\ncannot route: ambiguous (2 candidates: proj-a, proj-alpha)',
+    );
+    expect(mail.bodyRedacted).not.toContain('/tmp/fixtures');
+  });
 });
 
 describe('composeDryRunReply (D-P4B9-3)', () => {

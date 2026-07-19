@@ -389,10 +389,21 @@ export function composeResultReply(
  * wording (`WORKTREE: <msg>`, `SESSION_STATE_INCOMPLETE`, ...) is kept
  * VERBATIM (post-scrub) — the stage also rides in the status line, and no
  * verdict line exists because the failure input carries none.
+ *
+ * Stage union (D-P4B11 additive extension): the first three members mirror
+ * `dispatchIntent`'s own dispatch-failed stages; `'EXTRACTION'` (the mail's
+ * threadKey/prompt could not be extracted) and `'ROUTING'` (the daemon's
+ * one-time clarification-stopgap cannot-route notice — reason lists
+ * candidate NAMES only, never paths) are daemon-batch stages that never
+ * appear in a `DispatchOutcome`. Widening here is a pure superset: the
+ * dispatch pipeline's three-valued union stays assignable unchanged.
  */
 export function composeDispatchFailedReply(
   ctx: ReplyContext,
-  failure: { stage: 'SESSION_STATE' | 'WORKTREE' | 'DRIVER_START'; reason: string },
+  failure: {
+    stage: 'SESSION_STATE' | 'WORKTREE' | 'DRIVER_START' | 'EXTRACTION' | 'ROUTING';
+    reason: string;
+  },
 ): ComposedReply {
   const head = [
     scrubText(`❌ dispatch failed (${failure.stage})`, ctx.scrub),
