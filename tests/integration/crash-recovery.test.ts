@@ -226,6 +226,7 @@ describe('crash recovery at ingestMail transaction boundaries (Phase 2 Task 10)'
       const persistedIntent = intentStore2.getByCommandId(firstResult.commandId!);
       expect(persistedIntent).toEqual({
         id: expectedIntentId,
+        commandId: firstResult.commandId,
         status: 'PENDING',
         dryRun: false,
         statusReason: null,

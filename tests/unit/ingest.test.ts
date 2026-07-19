@@ -109,6 +109,7 @@ describe('createIngest / ingestMail (D-P2-8)', () => {
     expect(deps.intentStore.countAll()).toBe(1);
     expect(deps.intentStore.getByCommandId(result.commandId!)).toEqual({
       id: expectedIntentId,
+      commandId: result.commandId,
       status: 'PENDING',
       dryRun: false,
       statusReason: null,

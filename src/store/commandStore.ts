@@ -137,6 +137,19 @@ export class CommandStore {
     return row ? rowToRecord(row) : null;
   }
 
+  /**
+   * Round-trips a single command by row id (D-P4B10-3); `undefined` (not
+   * `null`) when missing, matching `intentStore.getById`'s convention. The
+   * returned record carries `uid`/`uidValidity` — this is the
+   * restart-recovery entry point: an intent summary's `commandId` leads
+   * here, and the uid pair is what lets the daemon re-fetch the original
+   * mail after a crash.
+   */
+  getById(id: number): CommandRecord | undefined {
+    const row = this.getRowById(id);
+    return row ? rowToRecord(row) : undefined;
+  }
+
   private getRowById(id: number): CommandRow | undefined {
     return this.db
       .prepare<[number], CommandRow>(`SELECT ${SELECT_COLUMNS} FROM commands WHERE id = ?`)

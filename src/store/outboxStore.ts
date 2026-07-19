@@ -37,6 +37,36 @@ interface OutboxRow {
   updated_at: string;
 }
 
+/**
+ * camelCase view of one `outbox` row (D-P4B10-3), mapping the EXISTING row
+ * shape 1:1 — no new columns, this batch only adds the read surface.
+ * `messageId` stays `string | null` because the COLUMN is nullable, even
+ * though `create` (above) always writes one — honest about what the schema
+ * alone guarantees, same stance as
+ * `clarificationStore.findPendingByCommandId`'s array return.
+ */
+export interface OutboxSummary {
+  id: string;
+  messageId: string | null;
+  commandId: number | null;
+  kind: OutboxKind;
+  status: OutboxStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function rowToSummary(row: OutboxRow): OutboxSummary {
+  return {
+    id: row.id,
+    messageId: row.message_id,
+    commandId: row.command_id,
+    kind: row.kind as OutboxKind,
+    status: row.status as OutboxStatus,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export class OutboxStore {
   private readonly db: Database;
 
@@ -78,6 +108,23 @@ export class OutboxStore {
         `UPDATE outbox SET status = @status, updated_at = @now WHERE id = @id`,
       )
       .run({ id, status: next, now });
+  }
+
+  /**
+   * All outbox rows currently in `status`, ordered by id for deterministic
+   * results (D-P4B10-3) — the input feed for the daemon's UNCERTAIN
+   * reconciliation sweep (`findByStatus('UNCERTAIN')`; whether/how the
+   * sweep confirms a send is the daemon batch's call, this store only
+   * answers the query).
+   */
+  findByStatus(status: OutboxStatus): OutboxSummary[] {
+    const rows = this.db
+      .prepare<[string], OutboxRow>(
+        `SELECT id, message_id, command_id, kind, status, created_at, updated_at
+         FROM outbox WHERE status = ? ORDER BY id`,
+      )
+      .all(status);
+    return rows.map(rowToSummary);
   }
 
   isKnownOutboxId(id: string): boolean {

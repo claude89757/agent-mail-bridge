@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { checkClarificationBinding } from '../../src/domain/clarificationState.js';
 import { IllegalTransitionError } from '../../src/domain/errors.js';
 import { openDatabase } from '../../src/store/database.js';
 import { ClarificationStore } from '../../src/store/clarificationStore.js';
@@ -82,6 +83,19 @@ describe('CommandStore (D-P2-10)', () => {
     expect(store.getByMessageId('msg-1@example.com')).toEqual(record);
   });
 
+  // D-P4B10-3: uid/uidValidity ride on the returned record — getById is the
+  // restart-recovery entry point for re-fetching a command's mail by uid.
+  it('getById round-trips a stored record (uid/uidValidity included) and returns undefined for an unknown id', () => {
+    const { record } = store.insertIfAbsent(commandInput({ uid: 42, uidValidity: '1690000001' }));
+
+    const found = store.getById(record.id);
+
+    expect(found).toEqual(record);
+    expect(found?.uid).toBe(42);
+    expect(found?.uidValidity).toBe('1690000001');
+    expect(store.getById(999999)).toBeUndefined();
+  });
+
   it('updateStatus persists a legal D-P2-2 transition', () => {
     const { record } = store.insertIfAbsent(commandInput());
 
@@ -139,6 +153,7 @@ describe('IntentStore (D-P2-10 / D-P3P-4)', () => {
     expect(store.countAll()).toBe(1);
     expect(store.getByCommandId(commandId)).toEqual({
       id: 'di-1',
+      commandId,
       status: 'PENDING',
       dryRun: false,
       statusReason: null,
@@ -189,6 +204,7 @@ describe('IntentStore (D-P2-10 / D-P3P-4)', () => {
 
       expect(store.getById('di-1')).toEqual({
         id: 'di-1',
+        commandId,
         status: 'RUNNING',
         dryRun: false,
         statusReason: null,
@@ -209,6 +225,7 @@ describe('IntentStore (D-P2-10 / D-P3P-4)', () => {
       // updatedAt before the assert check runs.
       expect(store.getById('di-1')).toEqual({
         id: 'di-1',
+        commandId,
         status: 'PENDING',
         dryRun: false,
         statusReason: null,
@@ -231,6 +248,7 @@ describe('IntentStore (D-P2-10 / D-P3P-4)', () => {
 
       expect(store.getById('di-1')).toEqual({
         id: 'di-1',
+        commandId,
         status: 'COMPLETED',
         dryRun: false,
         statusReason: null,
@@ -247,6 +265,7 @@ describe('IntentStore (D-P2-10 / D-P3P-4)', () => {
 
       expect(store.getById('di-1')).toEqual({
         id: 'di-1',
+        commandId,
         status: 'FAILED',
         dryRun: false,
         statusReason: 'AGENT_TASK_ERROR',
@@ -262,6 +281,7 @@ describe('IntentStore (D-P2-10 / D-P3P-4)', () => {
 
       expect(store.getById('di-1')).toEqual({
         id: 'di-1',
+        commandId,
         status: 'SKIPPED_DRY_RUN',
         dryRun: true,
         statusReason: null,
@@ -294,6 +314,7 @@ describe('IntentStore (D-P2-10 / D-P3P-4)', () => {
 
       expect(store.getById('di-1')).toEqual({
         id: 'di-1',
+        commandId,
         status: 'PENDING',
         dryRun: true,
         statusReason: null,
@@ -407,6 +428,66 @@ describe('OutboxStore (D-P2-10 / D-P2-3)', () => {
     expect(() => store.transition('outbox-1', 'PENDING', '2026-07-17T00:00:04.000Z')).toThrow(
       IllegalTransitionError,
     );
+  });
+
+  // D-P4B10-3: the UNCERTAIN-reconciliation feed — the daemon's outbox
+  // sweep asks "which rows sit in status X" and gets full summaries back.
+  describe('findByStatus (D-P4B10-3)', () => {
+    it('filters among mixed statuses and maps the full OutboxSummary row shape', () => {
+      const commandId = new CommandStore(db).insertIfAbsent(commandInput()).record.id;
+      store.create({
+        id: 'outbox-1',
+        messageId: 'reply-1@example.com',
+        commandId,
+        kind: 'RESULT',
+        now: '2026-07-17T00:00:01.000Z',
+      });
+      store.create({
+        id: 'outbox-2',
+        messageId: 'reply-2@example.com',
+        commandId: null,
+        kind: 'ACK',
+        now: '2026-07-17T00:00:02.000Z',
+      });
+      store.transition('outbox-1', 'SENDING', '2026-07-17T00:00:03.000Z');
+      store.transition('outbox-1', 'UNCERTAIN', '2026-07-17T00:00:04.000Z');
+
+      expect(store.findByStatus('UNCERTAIN')).toEqual([
+        {
+          id: 'outbox-1',
+          messageId: 'reply-1@example.com',
+          commandId,
+          kind: 'RESULT',
+          status: 'UNCERTAIN',
+          createdAt: '2026-07-17T00:00:01.000Z',
+          updatedAt: '2026-07-17T00:00:04.000Z',
+        },
+      ]);
+      expect(store.findByStatus('PENDING').map((entry) => entry.id)).toEqual(['outbox-2']);
+      expect(store.findByStatus('SENT')).toEqual([]);
+    });
+
+    it('orders multiple matches by id, not by creation order', () => {
+      store.create({
+        id: 'outbox-b',
+        messageId: 'reply-b@example.com',
+        commandId: null,
+        kind: 'ACK',
+        now: '2026-07-17T00:00:01.000Z',
+      });
+      store.create({
+        id: 'outbox-a',
+        messageId: 'reply-a@example.com',
+        commandId: null,
+        kind: 'ACK',
+        now: '2026-07-17T00:00:02.000Z',
+      });
+
+      expect(store.findByStatus('PENDING').map((entry) => entry.id)).toEqual([
+        'outbox-a',
+        'outbox-b',
+      ]);
+    });
   });
 });
 
@@ -702,6 +783,100 @@ describe('ClarificationStore (D-P4B4-3)', () => {
     // the domain map and this store would persist it; the invariant lives in
     // create()'s supersede-then-insert transaction, not in an extra edge
     // restriction here.
+  });
+
+  // D-P4B10-3: the EXPIRED-sweep feed. `expires_at <= now` deliberately
+  // shares its boundary with checkClarificationBinding's `now >= expiresAt`
+  // rejection (src/domain/clarificationState.ts): `now` exactly EQUAL to
+  // expires_at is already expired on BOTH sides, so the sweep and the
+  // binding check can never disagree about a row at the boundary instant.
+  describe('findPendingExpiredBefore (D-P4B10-3)', () => {
+    it('returns PENDING rows with expires_at <= now — the exact-equality boundary INCLUDED — in id order, excluding later expiries', () => {
+      const commandA = insertCommand('msg-a@example.com');
+      const commandB = insertCommand('msg-b@example.com');
+      const commandC = insertCommand('msg-c@example.com');
+      const a = store.create(
+        clarificationInput(commandA, {
+          threadKey: 'thread-a',
+          expiresAt: '2026-07-19T00:30:00.000Z',
+        }),
+      );
+      const b = store.create(
+        clarificationInput(commandB, {
+          threadKey: 'thread-b',
+          expiresAt: '2026-07-19T01:00:00.000Z',
+        }),
+      );
+      store.create(
+        clarificationInput(commandC, {
+          threadKey: 'thread-c',
+          expiresAt: '2026-07-19T01:00:00.001Z',
+        }),
+      );
+
+      expect(store.findPendingExpiredBefore('2026-07-19T01:00:00.000Z')).toEqual([a, b]);
+    });
+
+    it('excludes rows that already left PENDING, however long past their expires_at', () => {
+      const commandA = insertCommand('msg-a@example.com');
+      const commandB = insertCommand('msg-b@example.com');
+      const consumed = store.create(
+        clarificationInput(commandA, {
+          threadKey: 'thread-a',
+          expiresAt: '2026-07-19T00:10:00.000Z',
+        }),
+      );
+      store.transition(consumed.id, 'CONSUMED', null, '2026-07-19T00:05:00.000Z');
+      const stillPending = store.create(
+        clarificationInput(commandB, {
+          threadKey: 'thread-b',
+          expiresAt: '2026-07-19T00:10:00.000Z',
+        }),
+      );
+
+      expect(
+        store.findPendingExpiredBefore('2026-07-19T02:00:00.000Z').map((row) => row.id),
+      ).toEqual([stillPending.id]);
+    });
+
+    it('returns [] when every PENDING row expires strictly after now', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      store.create(clarificationInput(commandId, { expiresAt: '2026-07-19T01:00:00.000Z' }));
+
+      expect(store.findPendingExpiredBefore('2026-07-19T00:59:59.999Z')).toEqual([]);
+    });
+
+    it('shares the exact boundary with checkClarificationBinding: a row the sweep reports at instant T is precisely one the binding check rejects at T as EXPIRED_AT_REPLY', () => {
+      const commandId = insertCommand('msg-1@example.com');
+      const created = store.create(
+        clarificationInput(commandId, { expiresAt: '2026-07-19T01:00:00.000Z' }),
+      );
+      const boundaryNow = '2026-07-19T01:00:00.000Z';
+
+      const swept = store.findPendingExpiredBefore(boundaryNow);
+      expect(swept.map((row) => row.id)).toEqual([created.id]);
+
+      // A reply that matches on every OTHER factor still fails at the same
+      // instant the sweep first reports the row — the two `<=`/`>=`
+      // comparisons are one boundary, not two adjacent ones.
+      expect(
+        checkClarificationBinding(
+          {
+            token: created.token,
+            threadKey: created.threadKey,
+            candidateSetVersion: created.candidateSetVersion,
+            expiresAt: created.expiresAt,
+            status: created.status,
+          },
+          {
+            token: created.token,
+            threadKey: created.threadKey,
+            candidateSetVersion: created.candidateSetVersion,
+          },
+          boundaryNow,
+        ),
+      ).toEqual({ ok: false, reason: 'EXPIRED_AT_REPLY' });
+    });
   });
 });
 

@@ -267,6 +267,8 @@ describe('dispatchIntent (D-P4B8-2/3)', () => {
       // write, arriving here at all proves RUNNING happened in between.
       expect(harness.intentStore.getById(INTENT_ID)).toEqual({
         id: INTENT_ID,
+        // The seeded command is the first row in a fresh :memory: db.
+        commandId: 1,
         status: 'COMPLETED',
         dryRun: false,
         statusReason: null,
@@ -584,6 +586,8 @@ describe('dispatchIntent (D-P4B8-2/3)', () => {
       // what eventually fails it, never this use case inventing an ending.
       expect(harness.intentStore.getById(INTENT_ID)).toEqual({
         id: INTENT_ID,
+        // The seeded command is the first row in a fresh :memory: db.
+        commandId: 1,
         status: 'RUNNING',
         dryRun: false,
         statusReason: null,
@@ -614,6 +618,8 @@ describe('dispatchIntent (D-P4B8-2/3)', () => {
 
       expect(harness.intentStore.getById(INTENT_ID)).toEqual({
         id: INTENT_ID,
+        // The seeded command is the first row in a fresh :memory: db.
+        commandId: 1,
         status: 'RUNNING',
         dryRun: false,
         statusReason: null,
@@ -698,6 +704,8 @@ describe('dispatchIntent (D-P4B8-2/3)', () => {
       });
       expect(harness.intentStore.getById(INTENT_ID)).toEqual({
         id: INTENT_ID,
+        // The seeded command is the first row in a fresh :memory: db.
+        commandId: 1,
         status: 'SKIPPED_DRY_RUN',
         dryRun: true,
         statusReason: null,

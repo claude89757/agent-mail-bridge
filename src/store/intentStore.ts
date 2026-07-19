@@ -28,6 +28,7 @@ import { assertIntentTransition, type IntentStatus } from '../domain/intentState
 /** Raw `dispatch_intents` row shape as returned by better-sqlite3 (snake_case). */
 interface IntentRow {
   id: string;
+  command_id: number;
   status: string;
   dry_run: number;
   status_reason: string | null;
@@ -36,17 +37,26 @@ interface IntentRow {
 
 export interface IntentSummary {
   id: string;
+  /**
+   * The owning command's row id (D-P4B10-3): the daemon's PENDING feed
+   * walks `findByStatus('PENDING')` and must find its way BACK to the
+   * command (`commandStore.getById`) for the mail context — without this
+   * field a summary is a dead end. `NOT NULL` in the schema, so plain
+   * `number`.
+   */
+  commandId: number;
   status: string;
   dryRun: boolean;
   statusReason: string | null;
   updatedAt: string;
 }
 
-const SELECT_COLUMNS = `id, status, dry_run, status_reason, updated_at`;
+const SELECT_COLUMNS = `id, command_id, status, dry_run, status_reason, updated_at`;
 
 function rowToSummary(row: IntentRow): IntentSummary {
   return {
     id: row.id,
+    commandId: row.command_id,
     status: row.status,
     dryRun: row.dry_run === 1,
     statusReason: row.status_reason,

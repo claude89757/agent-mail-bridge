@@ -217,6 +217,36 @@ export class ClarificationStore {
   }
 
   /**
+   * PENDING rows whose TTL has passed as of `now` (D-P4B10-3): `status =
+   * 'PENDING' AND expires_at <= ?`, ordered by id — the input feed for the
+   * daemon's EXPIRED sweep (who walks the PENDING → EXPIRED edge is the
+   * daemon batch's call, per `clarificationState.ts`'s "WHO drives
+   * PENDING -> EXPIRED" note; this store only answers the query).
+   *
+   * BOUNDARY (deliberately shared with `checkClarificationBinding`'s
+   * `now >= expiresAt` rejection in `src/domain/clarificationState.ts`):
+   * `<=`, so `now` exactly EQUAL to `expires_at` is already expired here —
+   * the same fail-closed reading the binding check applies. One boundary,
+   * two enforcement points: a row this sweep reports at instant T is
+   * precisely a row the binding check would reject at T (test-pinned by the
+   * shared-boundary case in `tests/unit/store-records.test.ts`), so the
+   * sweep can never expire a clarification that a reply arriving the same
+   * instant could still legally consume. Comparison is lexicographic over
+   * `.toISOString()`-shaped strings — the `ClarificationCreateInput.expiresAt`
+   * producer contract (SQLite's TEXT `<=` and JS string `>=` agree on
+   * byte order, so the two sides compare identically).
+   */
+  findPendingExpiredBefore(now: string): ClarificationSummary[] {
+    const rows = this.db
+      .prepare<[string], ClarificationRow>(
+        `SELECT ${SELECT_COLUMNS} FROM clarification_requests
+         WHERE status = 'PENDING' AND expires_at <= ? ORDER BY id`,
+      )
+      .all(now);
+    return rows.map(rowToSummary);
+  }
+
+  /**
    * Enforces D-P4B4-1 via `assertClarificationTransition` BEFORE writing: an
    * illegal transition throws `IllegalTransitionError` and the row is left
    * untouched (the UPDATE never runs). `now` follows the same
