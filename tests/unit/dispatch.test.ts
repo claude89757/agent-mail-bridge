@@ -554,6 +554,74 @@ describe('dispatchIntent (D-P4B8-2/3)', () => {
     });
   });
 
+  describe('driver stream anomalies (D-P4B8-3 step 8 — seam-contract reliance, fail closed)', () => {
+    it('stream ending WITHOUT a terminal event ⇒ throws (never guesses an outcome), intent left RUNNING for the daemon restart contract', async () => {
+      // Hand-rolled stub: FakeAgentDriver's constructor REJECTS a
+      // terminal-less script by design (its own doc says runtime contract
+      // violations need a stub) — this is exactly that named case.
+      const terminalLessDriver: AgentDriver = {
+        capabilities: () => ({ supportsResume: true, agentName: 'stub-no-terminal' }),
+        startTask: async () => ({ sessionId: 'stub-session-1' }),
+        resumeTask: () => {
+          throw new Error('stub: resumeTask must not be called in this test');
+        },
+        streamEvents: () =>
+          (async function* (): AsyncGenerator<DriverEvent> {
+            yield AGENT_MESSAGE;
+            yield TOOL_ACTIVITY;
+          })(),
+        close: () => Promise.resolve(),
+      };
+      const harness = setup({ driver: terminalLessDriver });
+
+      await expect(dispatchIntent(input(), harness.deps)).rejects.toThrow(
+        /driver event stream ended without a terminal event/,
+      );
+
+      // Fail closed means NO terminal status was guessed: the intent stays
+      // RUNNING — reason still null, updated_at still the RUNNING draw
+      // (tick 0) — and the daemon's INTERRUPTED_BY_RESTART contract is
+      // what eventually fails it, never this use case inventing an ending.
+      expect(harness.intentStore.getById(INTENT_ID)).toEqual({
+        id: INTENT_ID,
+        status: 'RUNNING',
+        dryRun: false,
+        statusReason: null,
+        updatedAt: '2026-07-19T00:00:00.000Z',
+      });
+    });
+
+    it('stream REJECTING mid-iteration propagates VERBATIM (not an enumerated catch point in D-P4B8-3 step 9), intent left RUNNING', async () => {
+      const midStreamError = new Error('stream connection lost');
+      const rejectingDriver: AgentDriver = {
+        capabilities: () => ({ supportsResume: true, agentName: 'stub-mid-stream-reject' }),
+        startTask: async () => ({ sessionId: 'stub-session-1' }),
+        resumeTask: () => {
+          throw new Error('stub: resumeTask must not be called in this test');
+        },
+        streamEvents: () =>
+          (async function* (): AsyncGenerator<DriverEvent> {
+            yield AGENT_MESSAGE;
+            throw midStreamError;
+          })(),
+        close: () => Promise.resolve(),
+      };
+      const harness = setup({ driver: rejectingDriver });
+
+      // Identity assert: the rejection IS the stub's own error object —
+      // nothing wrapped it, nothing swallowed it.
+      await expect(dispatchIntent(input(), harness.deps)).rejects.toBe(midStreamError);
+
+      expect(harness.intentStore.getById(INTENT_ID)).toEqual({
+        id: INTENT_ID,
+        status: 'RUNNING',
+        dryRun: false,
+        statusReason: null,
+        updatedAt: '2026-07-19T00:00:00.000Z',
+      });
+    });
+  });
+
   describe('clarification short-circuit (D-P4B8-3 step 3)', () => {
     const AMBIGUOUS_ENTRIES: readonly ProjectEntry[] = [
       { name: 'api', path: '/tmp/fixtures/roots/work/api', aliases: ['backend'] },
@@ -601,6 +669,7 @@ describe('dispatchIntent (D-P4B8-2/3)', () => {
       expect(before?.status).toBe('PENDING');
       expect(harness.calls).toEqual([]);
       expect(harness.createWorktreeCalls).toEqual([]);
+      expect(harness.directoryExistsCalls).toEqual([]);
       expect(harness.fake!.startTaskCalls).toEqual([]);
       expect(harness.fake!.resumeTaskCalls).toEqual([]);
     });
