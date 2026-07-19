@@ -202,6 +202,46 @@ describe('dispatch — daemon command routing (D-P5B12-5)', () => {
   );
 });
 
+describe('dispatch — flagless commands reject extra arguments (D-P6B15-1)', () => {
+  // The four commands that take no flags share one router-level usage gate:
+  // any extra argument is a usage error (exit 2 per D-P5B13-2), reported
+  // BEFORE the command runs. All four handlers below record calls and the
+  // doctor io stays fake-but-armed, so a red assertion here distinguishes
+  // "gate missing, command ran anyway" from "gate present, wrong message".
+  it.each(['doctor', 'status', 'pause', 'resume'] as const)(
+    '"%s --bogus" exits 2 with a takes-no-arguments message and never reaches the command',
+    async (command) => {
+      const writer = makeWriter();
+      let handlerCalls = 0;
+      const io = baseDispatchIo({
+        writer,
+        runStatus: () => {
+          handlerCalls += 1;
+          return 0;
+        },
+        runPause: () => {
+          handlerCalls += 1;
+          return 0;
+        },
+        runResume: () => {
+          handlerCalls += 1;
+          return 0;
+        },
+      });
+
+      const exitCode = await dispatch([command, '--bogus'], io);
+
+      expect(exitCode).toBe(2);
+      expect(handlerCalls).toBe(0);
+      // Also proves doctor never ran: its report would land on stdout.
+      expect(writer.outLines).toHaveLength(0);
+      const err = writer.errLines.join('\n');
+      expect(err).toContain(`amb ${command}: takes no arguments`);
+      expect(err).toContain(`usage: amb ${command}`);
+    },
+  );
+});
+
 describe('dispatch — --version', () => {
   it('prints the exact version from package.json to stdout and exits 0', async () => {
     const manifest = JSON.parse(

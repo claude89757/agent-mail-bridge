@@ -200,6 +200,18 @@ function runDoctorCommand(io: DispatchIo): number {
  *  every other former placeholder now routes to a real handler. */
 const PLACEHOLDER_COMMANDS = new Set(['logout']);
 
+/** D-P6B15-1: the four commands that take no flags share one router-level
+ *  usage gate — any extra argument is a usage error (exit 2, per
+ *  D-P5B13-2's uniform convention), reported here so the handlers never see
+ *  a non-empty argv. The flag-taking commands (`setup`/`start`/`install`/
+ *  `uninstall`) keep owning their own parsing and stay out of this set. */
+const NO_ARGUMENT_COMMANDS = new Set(['doctor', 'status', 'pause', 'resume']);
+
+function reportExtraArguments(command: string, writer: Writer): number {
+  writer.err(`amb ${command}: takes no arguments (usage: amb ${command})`);
+  return 2;
+}
+
 function reportPlaceholderCommand(command: string, writer: Writer): number {
   writer.err(
     `\`amb ${command}\` is not implemented yet: credential-storage cleanup is pending the keychain decision.`,
@@ -240,6 +252,10 @@ export async function dispatch(argv: readonly string[], io: DispatchIo): Promise
   if (head === '--version') {
     io.writer.out(io.version);
     return 0;
+  }
+
+  if (NO_ARGUMENT_COMMANDS.has(head) && rest.length > 0) {
+    return reportExtraArguments(head, io.writer);
   }
 
   if (head === 'doctor') {

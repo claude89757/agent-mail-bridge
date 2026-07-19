@@ -161,9 +161,10 @@ same thread; replying to that thread continues the same codex session.
 | `amb logout` | Placeholder — exits 2; credential-storage cleanup is pending the keychain decision. |
 
 Exit codes are uniform: `0` success, `1` runtime failure, `2` usage error —
-an unknown command, or an unknown flag on the commands that take flags
-(`setup`, `start`, `install`, `uninstall`; the flagless commands currently
-ignore extra arguments). Two command-specific readings: `amb doctor` exits
+an unknown command, an unknown flag on the commands that take flags
+(`setup`, `start`, `install`, `uninstall`), or any extra argument to the
+flagless commands (`doctor`, `status`, `pause`, `resume` reject extra
+arguments). Two command-specific readings: `amb doctor` exits
 `1` when any check fails, and `amb start` exits `0` when stopped by
 SIGINT/SIGTERM but `1` after three consecutive failed poll rounds (restart
 policy belongs to the service manager). `amb --help` lists the commands;

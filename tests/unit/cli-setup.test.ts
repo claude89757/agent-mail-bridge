@@ -117,6 +117,26 @@ describe('runSetup (D-P5S-6)', () => {
     expect(result.messages.some((m) => m.includes(now.toISOString()))).toBe(true);
   });
 
+  // D-P6B15-2: exact pin on the success next-steps line. The old text
+  // promised a "full Phase 5 release" for background install; `amb install`
+  // has existed since batch 13, so the message now points at the real
+  // command sequence in README Quickstart order (doctor → start → install).
+  it('success next-steps message names the real command sequence, not a future release', () => {
+    const credentialsEnvFile = makeValidCredentialsFile();
+    const io = makeIo();
+
+    const result = runSetup(
+      ['--self', 'bridge-user@example.com', '--credentials-env-file', credentialsEnvFile],
+      io,
+      new Date('2026-07-18T12:00:00.000Z'),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.messages.at(-1)).toBe(
+      'next: run `amb doctor` to verify the installation, then `amb start` (foreground) or `amb install` (background service)',
+    );
+  });
+
   it('rejects a repeat setup without --force-config: exit 1, existing config byte-unchanged', () => {
     const credentialsEnvFile = makeValidCredentialsFile();
     const io = makeIo();

@@ -36,8 +36,11 @@
  *      VALUE never changes after the first successful call for a given
  *      `dbPath`, regardless of how many times `setup` re-runs. Same
  *      database handle as step 4, closed once both steps are done.
- *   6. Next-steps message pointing at `amb doctor` (daemon install is out of
- *      scope for this build — see the plan's self-review notes).
+ *   6. Next-steps message naming the real command sequence in README
+ *      Quickstart order — `amb doctor`, then `amb start` (foreground) or
+ *      `amb install` (background service). D-P6B15-2 replaced the original
+ *      stale "arrives with the full Phase 5 release" promise once
+ *      `amb install` actually existed (batch 13).
  *
  * `~/`-prefixed `credentialsEnvFile`/`dbPath` values are expanded (via
  * `expandTilde`, `./paths.ts`) ONLY for the real filesystem/database
@@ -316,7 +319,7 @@ export function runSetup(args: readonly string[], io: SetupIo, now: Date): Setup
     messages: [
       `config written to ${configPath}`,
       readyAtMessage,
-      'next: run `amb doctor` to verify the installation (background daemon install arrives with the full Phase 5 release)',
+      'next: run `amb doctor` to verify the installation, then `amb start` (foreground) or `amb install` (background service)',
     ],
   };
 }
