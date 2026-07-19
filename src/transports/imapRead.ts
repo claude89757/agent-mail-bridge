@@ -690,6 +690,18 @@ export function buildImapflowFactory(opts: {
  * Deliberately NOT unit-tested (unit tests inject fake `SmtpSend`s and
  * never open a network connection); this wiring is exercised by the live
  * send test (`tests/live/smtp-send-live.test.ts`, double-gated).
+ *
+ * Header-injection stance (load-bearing, review-verified at nodemailer
+ * 9.0.3): `send()` passes `subjectRedacted`/`bodyRedacted` through
+ * byte-for-byte, so CR/LF neutralization is delegated to nodemailer —
+ * `_encodeHeaderValue` (lib/mime-node/index.js) collapses `\r?\n|\r` to a
+ * single space in Subject, custom header values and Message-ID before
+ * encoding, so a CRLF in upstream content folds into one header line
+ * instead of smuggling extra headers. If nodemailer is ever swapped out,
+ * this neutralization must be re-verified or enforced here. Related quirk:
+ * nodemailer normalizes on-wire header casing (`X-AMB-Outbox-ID` is
+ * emitted as `X-Amb-Outbox-ID`); harmless because the read side
+ * lowercases all header names before matching (`x-amb-outbox-id`).
  */
 export function buildDefaultSmtpSend(auth: { user: string; pass: string }): SmtpSend {
   const transporter = nodemailer.createTransport({

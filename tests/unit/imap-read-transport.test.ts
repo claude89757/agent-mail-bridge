@@ -595,6 +595,42 @@ describe('createImapReadTransport (D-P3B2-2/3)', () => {
       expect(events).toEqual(['register']);
     });
 
+    // D-P3B5-2 clause 1, AWAIT semantics (review finding, batch-5 T1): the
+    // other order tests use fakes that settle immediately, so they pin the
+    // CALL order but could in principle be satisfied by an implementation
+    // that starts registerOutbox without awaiting its settlement. Holding
+    // the register promise PENDING and draining the task queue proves
+    // smtpSend is never invoked until registration has actually resolved —
+    // the difference matters exactly when the real store write is slow.
+    it('never calls smtpSend while registerOutbox is still pending', async () => {
+      let resolveRegister!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        resolveRegister = resolve;
+      });
+      const events: Array<'register' | 'smtp'> = [];
+      const transport = createImapReadTransport({
+        factory: createExplodingFactory(),
+        send: {
+          selfAddress: SELF_ADDRESS,
+          smtpSend: async () => {
+            events.push('smtp');
+          },
+          registerOutbox: () => {
+            events.push('register');
+            return gate;
+          },
+          mintOutboxId: () => FIXED_OUTBOX_ID,
+        },
+      });
+
+      const pending = transport.send(outboundMailFixture());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(events).toEqual(['register']);
+      resolveRegister();
+      await pending;
+      expect(events).toEqual(['register', 'smtp']);
+    });
+
     // D-P3B5-2 clause 1 (smtp failure: the row is already registered; the
     // rejection propagates as-is and reconciliation is the daemon batch's
     // outbox UNCERTAIN path).
