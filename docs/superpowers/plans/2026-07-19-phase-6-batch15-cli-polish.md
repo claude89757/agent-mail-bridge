@@ -58,11 +58,11 @@ status --bogus` 冒烟对齐（exit 2）。
 `tests/unit/cli-dispatch.test.ts`（或现命令路由测试所在文件）、
 `tests/unit/cli-setup.test.ts`。
 
-- [ ] RED → GREEN → mutation 自证 → commit。
+- [x] RED → GREEN → mutation 自证 → commit。
 
 ### Task 2: 批次收尾（编排者）
 
-- [ ] 审查（轻量：diff 走查 + mutation 重放）→ 完成记录 → commit + push。
+- [x] 审查（轻量：diff 走查 + mutation 重放）→ 完成记录 → commit + push。
 
 ---
 
@@ -73,3 +73,31 @@ status --bogus` 冒烟对齐（exit 2）。
 - 红线：无涉（本地 CLI 行为，零发信零运行零发布）。
 - 一致性：退 2 沿 D-P5B13-2；文案与 README Quickstart 对齐。
 - 无占位符：两件事各自的改动位、测试点、mutation 自证已具体。
+
+---
+
+## 完成记录（2026-07-19，批次十五收尾）
+
+| commit | 内容 |
+| --- | --- |
+| `8a8bb5b` | 本 plan 落盘 |
+| `19bc879` | T1：dispatch.ts 路由层 NO_ARGUMENT_COMMANDS 共享 gate（rest 非空 ⇒ stderr "takes no arguments" + 退 2，handler 零触碰）+ setup 成功文案按 Quickstart 顺序指路（doctor → start → install）+ README 退出码段限定语删除；新增 4 拒参测试 + 1 文案 pin 测试 |
+| 本提交 | T2 收尾：编排者轻量审查 + 本记录 |
+
+测试 838 → **843**（+5），四件套全绿。
+
+**轻量审查（编排者，per plan Task 2）**：diff 走查通过（gate 位于
+help/version/无参处理之后、四命令路由之前；README 措辞由妥协句变事实句；
+setup 模块注释第 6 步同步——实现者偏离 2 属同向清障，APPROVED）；两条
+mutation 在 exp15 副本独立重放：移除 gate ⇒ 恰 4 红、文案回退 ⇒ 恰
+1 红。实现者偏离 1（旧文案本无 pin，改为新增 pin 并以旧串先红证明）
+APPROVED——与 plan 意图（防漂移）一致。
+
+**行为面记录**：`amb status --help` 现退 2（"takes no arguments"）——与
+带 flag 命令对 `--help` 报用法错误的现状一致（全局 `amb --help` 仍是
+帮助出口，exit 0）；如未来给子命令加 `--help`，四命令 gate 需同步放行，
+属那时的一并决策。
+
+**批次十四移交清偿**：#1 setup 文案 ✓、#2 无 flag 命令拒参 ✓；#3
+（claude-code keyword）留 v0.2。至此**自主可推进项全部完成**，剩余
+工作全部等待用户（ADR-0003 / E2E / 真机走查 / 发布五步）。
