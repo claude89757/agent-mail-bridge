@@ -20,12 +20,15 @@
  * unit file itself, which necessarily carries real absolute paths for the
  * service manager to execute.
  *
- * v0.1 escaping assumptions: plist values are XML-escaped (`escapeXml`), so
- * any byte-legal path is safe there. The systemd `ExecStart` quotes both
- * paths (protecting spaces); systemd's own `%` specifier and `$` variable
- * expansion inside quoted arguments are NOT escaped — v0.1 documents the
- * assumption that node/entry paths contain neither (typical installs),
- * rather than hand-rolling the full systemd quoting grammar.
+ * v0.1 escaping assumptions: plist values are XML-escaped (`escapeXml`),
+ * which covers every path XML 1.0 can represent — control characters
+ * (legal in POSIX paths, unrepresentable in XML even escaped) are outside
+ * the v0.1 assumption. The systemd `ExecStart` quotes both paths
+ * (protecting spaces); systemd's own `%` specifier and `$` variable
+ * expansion inside quoted arguments are NOT escaped, and an embedded `"`
+ * or `\` would likewise break the quoting — v0.1 documents the assumption
+ * that node/entry paths contain none of these (typical installs), rather
+ * than hand-rolling the full systemd quoting grammar.
  *
  * Result-value discipline: `{ exitCode, messages }`, never throwing, never
  * printing (`runSetup`/`statusCmd` precedent) — `main.ts` owns the printing

@@ -156,7 +156,7 @@ assembleDaemon spy 用例。T2：logSink 轮转/降级/幂等 + paths 新函数 
 `tests/unit/cli-start.test.ts`、`tests/unit/cli-setup.test.ts`、
 `tests/unit/daemon-assembly.test.ts`。
 
-- [ ] RED → GREEN → commit。
+- [x] RED → GREEN → commit。
 
 ### Task 2: 脱敏日志文件轮转
 
@@ -164,20 +164,20 @@ assembleDaemon spy 用例。T2：logSink 轮转/降级/幂等 + paths 新函数 
 Modify `src/cli/paths.ts`、`src/cli/start.ts`、`tests/unit/cli-paths.test.ts`、
 `tests/unit/cli-start.test.ts`。
 
-- [ ] RED → GREEN → commit。
+- [x] RED → GREEN → commit。
 
 ### Task 3: launchd/systemd 安装产物
 
 **Files:** Create `src/cli/service.ts`、`tests/unit/cli-service.test.ts`;
 Modify `src/cli/dispatch.ts`、`src/cli/main.ts` + dispatch 测试。
 
-- [ ] RED → GREEN → commit。
+- [x] RED → GREEN → commit。
 
 ### Task 4: 批次收尾（编排者）
 
-- [ ] 四件套全绿；threat-model（C10 文件日志面 + assembleDaemon 残余闭合）
+- [x] 四件套全绿；threat-model（C10 文件日志面 + assembleDaemon 残余闭合）
   /architecture 刷新；完成记录 + 移交；
-- [ ] commit + push。
+- [x] commit + push。
 
 ---
 
@@ -192,3 +192,69 @@ Modify `src/cli/dispatch.ts`、`src/cli/main.ts` + dispatch 测试。
 - 一致性：sleep seam 形态改动同步 shell/start/全部假件；stdioSpy helper
   重构不减少 cli-start 现有断言；夹具 SENTINEL 低熵。
 - 无占位符：每测试点具体。
+
+---
+
+## 完成记录（2026-07-19，批次十三收尾）
+
+### 提交清单
+
+| commit | 内容 |
+| --- | --- |
+| `96a945e` | 本 plan 落盘 |
+| `bde43f4` | T1：sleep seam 升级 `(ms, abort: AbortSignal)`（shell 每轮新建 controller、生产绑定 clearTimeout + `{once:true}` 双向不泄漏）+ `tests/helpers/stdioSpy.ts` 抽出（cli-start 守卫重构断言零减）+ assembleDaemon spy 用例 + setup parse 退出码 1→2（runtime 位全留 1） |
+| `299739c` | T2：`src/cli/logSink.ts`（1 MiB shift 轮转 `.1..3`、fail-open 永久降级仅报一次）+ `resolveDefaultLogDir`（XDG_STATE_HOME）+ start.ts tee（console + 文件同批已 scrub 文本） |
+| `bc84223` | T3：`src/cli/service.ts` 渲染器（plist escapeXml / systemd 引号护路径）+ `amb install`（拒绝已存在/--force/打印激活命令绝不执行/entryPath 空 fail closed/预建日志目录）+ `amb uninstall`（去激活→删服务文件→手动清理清单全波浪线形态） |
+| 本提交 | T4 收尾：四条审查 Minor 全兑现（见下）+ threat-model C10 残余闭合与文件日志面 + architecture 行 + 本记录 |
+
+测试 797 → **838**（+41），四件套全绿，全程零真实连接、零发信、零 codex
+额度、零 launchctl/systemctl 执行。
+
+### 审查故事（组合审查，钉 96a945e..bc84223）
+
+- **APPROVED，零 Important**。9 条实现者 mutation 宣称全部在副本重放属实
+  （含 ⑤ 的行为等价变异形态辨析）；审查者另注入 4 根自选探针：P1
+  （buildTransport 后 stdout.write）被捕获、P3（install 输出改真实路径）
+  被 4 测捕获、P4（escapeXml 恒等化）被捕获、**P2（close 闭包内
+  stderr.write）存活**——spy 窗口不含 `close()` 而凭据被闭包词法俘获。
+- **批次十二残余闭合实证**：上批原位探针（assembleDaemon 体内、
+  readCredentials 返回后 raw stderr.write）重放**恰 1 红**且正是新 spy
+  用例——跨批移交项完成闭环。
+- 审查附带发现：批次十二版守卫在 `vi.restoreAllMocks()` **之后**读
+  `mock.calls`（restore 含 reset 语义，缺席断言当时实为真空）；本批
+  helper 显式先 capture 后 restore，属实质加固而非纯重构。
+- 四条 Minor 由编排者按批次十收尾先例在本提交直接兑现：
+  1. spy 窗口扩到含 `close()`（P2 修法）——收尾后在副本重放 P2，
+     **恰 1 红**（1 failed | 9 passed），闭合实证；
+  2. logSink 三边界补测：恰好等于阈值不轮转（`>` 语义 pin）、单行超
+     阈值仍落盘且下一写轮转、rotate 内 rename 失败与 append 失败同款
+     降级（仅报一次 + 此后零 fs 触碰）；
+  3. uninstall unlink 失败分支补测（exit 1 + fs 错误消息 tilde 化，
+     `not.toContain(fakeHomedir)`）；
+  4. doc 措辞收紧：escapeXml 不覆盖 XML 1.0 无法表示的控制字符、
+     systemd 引号假设点名 `"`/`\`、shell.ts controller 注释改为
+     「最近一次 sleep 的 controller（完成后 linger 至下轮替换）」。
+
+### 实现者偏离五条（审查全部裁定合理）
+
+report seam 注入（降级告警可 scrub，红线 2 需要）；escapeXml 实现取向
+（含 `&`→`&amp;` 测试）；install 预建日志目录（launchd spawn 即打开
+Standard*Path）；`ServiceCommandResult.exitCode` 含 2（D-P5B13-2 对齐）；
+uninstall 清单附「自定义路径以 config.json 为准」附注。
+
+### 移交清单（后续批次）
+
+1. **launchctl 激活文案语法**：`load -w` 在新版 macOS 属 legacy（仍工作）；
+   Phase 6 真机走查时观察，如换 `bootstrap gui/$UID` 属文案级改动；
+2. **logSink 永久降级不自动恢复**：doc 已钉死；若未来要重试需新决策；
+3. 批次十一移交 #5（ACK 异步）/#6（QUEUED_WINDOW 复活）维持批次十三
+   范围裁定：v0.1 不做；
+4. IDLE watch 维持 follow-up 定位（poll 已满足 P95<60s）。
+
+### 经验沉淀
+
+- **spy/guard 的作用域窗口本身是测试面**：守卫测试"包住哪段执行"决定
+  它兜住哪些通道——闭包俘获的秘密在窗口外调用时照样泄漏（P2）；写
+  资源守卫时把"释放路径"（close/dispose）一并纳入窗口；
+- **`mockRestore` 后读 `mock.calls` 是真空断言**：capture 必须先于
+  restore——上批守卫的缺席断言曾因此短暂真空（幸有 mutation 实证兜底）。

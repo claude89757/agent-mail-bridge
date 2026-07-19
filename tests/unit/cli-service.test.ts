@@ -273,6 +273,27 @@ describe('runUninstall (D-P5B13-5)', () => {
     expect(joined).not.toContain(HOME);
   });
 
+  it('an unlink failure exits 1 with a tilde-form error message — the expanded homedir never reaches the output (batch-13 review Minor-3)', () => {
+    const h = makeIo({
+      existingPaths: [PLIST_REAL_PATH],
+      unlink: () => {
+        throw new Error(`EACCES: permission denied, unlink '${PLIST_REAL_PATH}'`);
+      },
+    });
+
+    const result = runUninstall([], h.io);
+
+    expect(result.exitCode).toBe(1);
+    const joined = result.messages.join('\n');
+    expect(joined).toContain('failed to remove');
+    // Deactivation (step 1) already printed before the failure surfaced.
+    expect(joined).toContain('launchctl unload');
+    // The fs error message embedded the real path; tildeification must
+    // have rewritten it (red line 2's display-surface discipline).
+    expect(joined).toContain("~/Library/LaunchAgents/");
+    expect(joined).not.toContain(HOME);
+  });
+
   it('linux: prints the systemctl disable --now deactivation command and unlinks the unit path', () => {
     const h = makeIo({ platform: 'linux', existingPaths: [UNIT_REAL_PATH] });
 

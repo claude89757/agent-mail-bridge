@@ -283,12 +283,19 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   a raw `stderr.write` inside the file reader) each turn exactly this one
   test red (`tests/unit/cli-start.test.ts`, zero-connection: hoisted
   `imapflow` mock also pins `logger === false`, no `debug`, `secure:
-  true`, creds reaching only the `auth` field). Known residual: the guard
-  wraps the CLI entry path; an equivalent five-sink spy around the
-  `assembleDaemon` body itself is a one-line follow-up (raw-stream writes
-  there are outside the lint fence). `amb status` reports the DB view only
-  and never echoes the mailbox address. Keychain storage itself is still
-  the open ADR noted above.
+  true`, creds reaching only the `auth` field). That residual is now
+  closed: the `assembleDaemon` body AND its `close()` closure (which
+  lexically captures the credentials) run under the same five-sink spy —
+  the batch-12/13 review probes at both positions each turn exactly one
+  test red (`tests/unit/daemon-assembly.test.ts`). The daemon's file-log
+  surface (`src/cli/logSink.ts`, shift-rotated `amb.log`) sits BEHIND the
+  same scrub funnel as the console — every line is scrubbed before the
+  tee, and the sink's own failure reporter is scrub-wrapped in production
+  (`src/cli/start.ts`) because raw fs errors can embed expanded home
+  paths. `amb status` reports the DB view only and never echoes the
+  mailbox address; `amb install`/`uninstall` print every path in `~/`
+  tilde form (test-pinned against the expanded homedir appearing).
+  Keychain storage itself is still the open ADR noted above.
 
 ## 6. Explicit non-goals (v0.1)
 

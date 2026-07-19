@@ -173,13 +173,18 @@ describe('assembleDaemon (D-P5B12-4)', () => {
     const h = makeHarness();
     const config = baseConfig();
 
-    // D-P5B13-3: the whole assembly runs under the five-sink stdio spy —
-    // the batch-12 review named `assembleDaemon`'s own body (after the
-    // credentials leave `readCredentials`) as a raw-write channel no lint
-    // rule polices; this capture is its test floor.
-    const { result: assembled, captured } = await withStdioSpy(() =>
-      assembleDaemon(config, h.builders),
-    );
+    // D-P5B13-3: the whole assembly AND its close() run under the
+    // five-sink stdio spy — the batch-12 review named `assembleDaemon`'s
+    // own body (after the credentials leave `readCredentials`) as a
+    // raw-write channel no lint rule polices, and the batch-13 review's
+    // P2 probe showed the close() closure (which lexically captures
+    // `credentials`) sat outside the original spy window; this capture is
+    // the test floor for both.
+    const { result: assembled, captured } = await withStdioSpy(async () => {
+      const a = await assembleDaemon(config, h.builders);
+      await a.close();
+      return a;
+    });
     expect(captured).not.toContain(SENTINEL_USER);
     expect(captured).not.toContain(SENTINEL_PASS);
 
@@ -206,8 +211,6 @@ describe('assembleDaemon (D-P5B12-4)', () => {
     });
     expect(everythingElse).not.toContain(SENTINEL_USER);
     expect(everythingElse).not.toContain(SENTINEL_PASS);
-
-    await assembled.close();
   });
 
   it('hands the transport the PRODUCTION buildRegisterOutbox product over the assembled stores: invoking it lands a SENDING outbox row keyed by the normalized Message-ID', async () => {

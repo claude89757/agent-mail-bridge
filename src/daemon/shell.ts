@@ -113,10 +113,12 @@ export async function runDaemonShell(deps: ShellDeps): Promise<ShellOutcome> {
   };
 
   let stopping = false;
-  // D-P5B13-1: the CURRENT sleep's controller (null outside sleep). The
-  // handler aborts it so a sleeping shell wakes immediately; aborting a
-  // controller whose sleep already resolved is a harmless no-op, and the
-  // loop-top `stopping` checks below stay the single exit decision.
+  // D-P5B13-1: the controller of the most recent sleep (null only before
+  // the first one — a finished sleep's controller lingers until the next
+  // round replaces it). The handler aborts it so a sleeping shell wakes
+  // immediately; aborting a controller whose sleep already resolved is a
+  // harmless no-op, and the loop-top `stopping` checks below stay the
+  // single exit decision.
   let sleepController: AbortController | null = null;
   const unsubscribe = deps.onShutdownSignal(() => {
     stopping = true;

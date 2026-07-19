@@ -103,6 +103,65 @@ describe('buildFileLogSink (D-P5B13-4)', () => {
     expect(existsSync(`${logPath}.4`)).toBe(false);
   });
 
+  it('an entry landing EXACTLY on LOG_MAX_BYTES does not rotate — only going past it does (batch-13 review Minor-2, the `>` boundary)', () => {
+    const sink = buildFileLogSink(logDir);
+    const logPath = join(logDir, LOG_FILE);
+
+    // entry (line + '\n') == LOG_MAX_BYTES exactly: `size + entry > MAX`
+    // is false, so the write appends in place.
+    sink.write(lineOfSize('exact:', LOG_MAX_BYTES - 1));
+    expect(existsSync(`${logPath}.1`)).toBe(false);
+    expect(readFileSync(logPath, 'utf8')).toHaveLength(LOG_MAX_BYTES);
+
+    // One more byte-carrying line goes PAST the threshold ⇒ now it rotates.
+    sink.write('next');
+    sink.close();
+    expect(readFileSync(`${logPath}.1`, 'utf8').slice(0, 6)).toBe('exact:');
+    expect(readFileSync(logPath, 'utf8')).toBe('next\n');
+  });
+
+  it('a single line larger than LOG_MAX_BYTES still lands (rotation of an empty state is a no-op, the oversized entry is appended whole)', () => {
+    const sink = buildFileLogSink(logDir);
+    const logPath = join(logDir, LOG_FILE);
+
+    sink.write(lineOfSize('huge:', LOG_MAX_BYTES + 100));
+    expect(readFileSync(logPath, 'utf8').slice(0, 5)).toBe('huge:');
+    expect(existsSync(`${logPath}.1`)).toBe(false);
+
+    // The NEXT write finds the oversized file past the threshold and
+    // shifts it out before appending.
+    sink.write('after');
+    sink.close();
+    expect(readFileSync(`${logPath}.1`, 'utf8').slice(0, 5)).toBe('huge:');
+    expect(readFileSync(logPath, 'utf8')).toBe('after\n');
+  });
+
+  it('a rename failure INSIDE rotation degrades exactly like an append failure: one report, then permanent no-op (batch-13 review Minor-2)', () => {
+    const reports: string[] = [];
+    const logPath = join(logDir, LOG_FILE);
+    const fake = makeFakeFs({
+      // The current log sits at the threshold so any write triggers
+      // rotation; every generation probe answers "absent".
+      statSync: (path) => (path === logPath ? { size: LOG_MAX_BYTES } : null),
+      renameSync: () => {
+        throw new Error('EACCES: rename denied');
+      },
+    });
+    const sink = buildFileLogSink(logDir, fake, (line) => {
+      reports.push(line);
+    });
+
+    sink.write('first');
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('file logging disabled');
+
+    const callsAfterDegrade = fake.calls.length;
+    sink.write('second');
+    sink.write('third');
+    expect(reports).toHaveLength(1);
+    expect(fake.calls.length).toBe(callsAfterDegrade);
+  });
+
   it('a write failure degrades to console-only and reports through the injected reporter EXACTLY ONCE (fail-open: the daemon never dies for its log file)', () => {
     const reports: string[] = [];
     const fs = makeFakeFs({
