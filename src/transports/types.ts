@@ -80,5 +80,14 @@ export interface MailTransport {
   fetchSince(mailbox: string, uidValidity: string, sinceUid: number): Promise<IncomingMail[]>;
   send(mail: OutboundMail): Promise<SendReceipt>;
   markProcessed(mail: IncomingMail): Promise<void>;
+  /**
+   * Current mailbox state (decision D-P4B11-1, direct pre-1.0 seam change —
+   * D-P3B2-1 precedent): the daemon's mail tick reads `uidValidity` FIRST,
+   * keys its stored watermark on it, and thereby detects a UIDVALIDITY
+   * change (new key ⇒ watermark 0 ⇒ bounded full rescan, converging via
+   * ingest idempotency + the readyAt fence). Read-only: implementations must
+   * not mutate any mailbox state answering this.
+   */
+  mailboxStatus(mailbox: string): Promise<{ uidValidity: string; uidNext: number }>;
   close(): Promise<void>;
 }

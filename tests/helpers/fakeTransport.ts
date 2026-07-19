@@ -60,6 +60,13 @@ export class FakeMailTransport implements MailTransport {
   readonly sentMails: OutboundMail[] = [];
   /** Every `IncomingMail` passed to `markProcessed`, in call order. */
   readonly processedMails: IncomingMail[] = [];
+  /**
+   * Scriptable `mailboxStatus` answer (D-P4B11-1). `null` (the default)
+   * yields the mechanical answer — `FAKE_UID_VALIDITY` plus a `uidNext` one
+   * past the highest uid this fake has seen; UIDVALIDITY-change tests set a
+   * value here to steer the daemon's mail tick onto a new watermark key.
+   */
+  scriptedMailboxStatus: { uidValidity: string; uidNext: number } | null = null;
 
   private readonly registerOutbox: RegisterOutbox;
   private readonly deliveredMails: IncomingMail[] = [];
@@ -187,6 +194,20 @@ export class FakeMailTransport implements MailTransport {
       uidValidity: FAKE_UID_VALIDITY,
       mailbox: FAKE_MAILBOX,
     });
+  }
+
+  /**
+   * D-P4B11-1: scripted value when set, else the mechanical default (see
+   * `scriptedMailboxStatus`). Declared parameterless — the fake watches one
+   * mailbox, and a fake method may declare fewer parameters than the
+   * interface it implements (the scripted-client precedent in
+   * tests/unit/imap-read-transport.test.ts).
+   */
+  mailboxStatus(): Promise<{ uidValidity: string; uidNext: number }> {
+    if (this.scriptedMailboxStatus !== null) {
+      return Promise.resolve(this.scriptedMailboxStatus);
+    }
+    return Promise.resolve({ uidValidity: FAKE_UID_VALIDITY, uidNext: this.uidCounter + 1 });
   }
 
   /** Records `mail` into `processedMails`. No other effect — there is no

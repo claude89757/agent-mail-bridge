@@ -706,6 +706,38 @@ export function createImapReadTransport(opts: {
       return receipt;
     },
 
+    /**
+     * D-P4B11-1: current mailbox state for the daemon's watermark bootstrap
+     * and UIDVALIDITY-change detection. Implemented over the SAME
+     * connect -> read-only lock -> read `client.mailbox` -> release ->
+     * logout cycle as `fetchSince` (the plan allowed imapflow's `status()`
+     * as an alternative; reusing the existing mailbox-open fields keeps
+     * `ImapClientLike` unchanged and the v0.1 one-connection-per-call
+     * policy uniform). Read-only lock: reporting state must never mutate
+     * the mailbox.
+     */
+    async mailboxStatus(mailbox: string): Promise<{ uidValidity: string; uidNext: number }> {
+      const client = await factory.connect();
+      const lock = await client.getMailboxLock(mailbox, { readOnly: true });
+      try {
+        if (client.mailbox === false) {
+          // Same loud fail-closed wording as fetchSince: a mailbox with no
+          // state cannot anchor a watermark.
+          throw new Error(
+            `ImapReadTransport: mailbox "${mailbox}" reports no state after getMailboxLock ` +
+              '(client.mailbox === false)',
+          );
+        }
+        return {
+          uidValidity: String(client.mailbox.uidValidity),
+          uidNext: client.mailbox.uidNext,
+        };
+      } finally {
+        lock.release();
+        await client.logout();
+      }
+    },
+
     async markProcessed(mail: IncomingMail): Promise<void> {
       const client = await factory.connect();
       // NOT read-only: setting \Seen is a write, so it needs write access

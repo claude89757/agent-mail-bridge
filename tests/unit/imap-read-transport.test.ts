@@ -927,6 +927,39 @@ describe('createImapReadTransport (D-P3B2-2/3)', () => {
     });
   });
 
+  describe('mailboxStatus (D-P4B11-1)', () => {
+    it('reports the opened mailbox\'s uidValidity (stringified) and uidNext over a read-only lock, one full connect/logout cycle', async () => {
+      const log: LoggedCall[] = [];
+      const factory = createScriptedFactory(log, {
+        mailbox: { uidValidity: UIDVALIDITY_BIGINT, uidNext: 42 },
+      });
+      const transport = createImapReadTransport({ factory });
+
+      await expect(transport.mailboxStatus(MAILBOX)).resolves.toEqual({
+        uidValidity: UIDVALIDITY,
+        uidNext: 42,
+      });
+      expect(log).toEqual([
+        { op: 'connect' },
+        { op: 'getMailboxLock', path: MAILBOX, readOnly: true },
+        { op: 'release' },
+        { op: 'logout' },
+      ]);
+    });
+
+    it('throws loudly when the client reports no mailbox state (mailbox === false), still releasing the lock', async () => {
+      const log: LoggedCall[] = [];
+      const factory = createScriptedFactory(log, { mailbox: false });
+      const transport = createImapReadTransport({ factory });
+
+      await expect(transport.mailboxStatus(MAILBOX)).rejects.toThrow(
+        /reports no state after getMailboxLock/,
+      );
+      expect(log).toContainEqual({ op: 'release' });
+      expect(log).toContainEqual({ op: 'logout' });
+    });
+  });
+
   describe('close', () => {
     it('resolves without making any client calls', async () => {
       const transport = createImapReadTransport({ factory: createExplodingFactory() });

@@ -127,6 +127,49 @@ export class OutboxStore {
     return rows.map(rowToSummary);
   }
 
+  /**
+   * All outbox rows for `commandId`, ordered by id (D-P4B11-1) — one
+   * command legitimately accumulates several rows over its life (a
+   * clarification-stopgap ERROR reply, then a RESULT, ...), so this is the
+   * daemon's per-command reply history: `src/daemon/replySender.ts` locates
+   * the just-registered SENDING row on a send rejection here, and the
+   * clarification stopgap dedupes its one-time cannot-route reply on the
+   * presence of an ERROR row. Id order is lexicographic over the caller's
+   * own ids (uuid in production) — deterministic, NOT chronological; callers
+   * needing "the row this send just registered" filter by status first (see
+   * replySender's doc).
+   */
+  findByCommandId(commandId: number): OutboxSummary[] {
+    const rows = this.db
+      .prepare<[number], OutboxRow>(
+        `SELECT id, message_id, command_id, kind, status, created_at, updated_at
+         FROM outbox WHERE command_id = ? ORDER BY id`,
+      )
+      .all(commandId);
+    return rows.map(rowToSummary);
+  }
+
+  /**
+   * The outbox row carrying `messageId`, or `undefined` (D-P4B11-1) — the
+   * daemon's echo-reconciliation lookup (an inbound `echo` whose normalized
+   * Message-ID matches an UNCERTAIN row confirms that send landed). The
+   * schema's UNIQUE constraint on `message_id` (migrations.ts v1) already
+   * guarantees at most one non-null match; `ORDER BY id LIMIT 1` stays as a
+   * deterministic tie-break purely in defense of a future constraint
+   * relaxation (the batch-11 plan assumed no constraint existed —
+   * tests/unit/store-records.test.ts pins the constraint instead, since the
+   * multi-row state is unreachable through this store today).
+   */
+  findByMessageId(messageId: string): OutboxSummary | undefined {
+    const row = this.db
+      .prepare<[string], OutboxRow>(
+        `SELECT id, message_id, command_id, kind, status, created_at, updated_at
+         FROM outbox WHERE message_id = ? ORDER BY id LIMIT 1`,
+      )
+      .get(messageId);
+    return row ? rowToSummary(row) : undefined;
+  }
+
   isKnownOutboxId(id: string): boolean {
     return this.getRowById(id) !== undefined;
   }

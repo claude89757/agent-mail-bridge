@@ -498,6 +498,118 @@ describe('OutboxStore (D-P2-10 / D-P2-3)', () => {
       ]);
     });
   });
+
+  // D-P4B11-1: the daemon's per-command reply history (stopgap dedupe +
+  // reject-path row location in src/daemon/replySender.ts).
+  describe('findByCommandId (D-P4B11-1)', () => {
+    it('returns only the given command\'s rows, in id order (not creation order), with the full summary shape', () => {
+      const commandStore = new CommandStore(db);
+      const commandA = commandStore.insertIfAbsent(commandInput()).record.id;
+      const commandB = commandStore.insertIfAbsent(
+        commandInput({ messageId: 'msg-2@example.com' }),
+      ).record.id;
+      // Created in REVERSE id order so the ORDER BY id claim is observable.
+      store.create({
+        id: 'outbox-b',
+        messageId: 'reply-b@example.com',
+        commandId: commandA,
+        kind: 'ERROR',
+        now: '2026-07-17T00:00:01.000Z',
+      });
+      store.create({
+        id: 'outbox-a',
+        messageId: 'reply-a@example.com',
+        commandId: commandA,
+        kind: 'RESULT',
+        now: '2026-07-17T00:00:02.000Z',
+      });
+      store.create({
+        id: 'outbox-c',
+        messageId: 'reply-c@example.com',
+        commandId: commandB,
+        kind: 'ACK',
+        now: '2026-07-17T00:00:03.000Z',
+      });
+
+      expect(store.findByCommandId(commandA)).toEqual([
+        {
+          id: 'outbox-a',
+          messageId: 'reply-a@example.com',
+          commandId: commandA,
+          kind: 'RESULT',
+          status: 'PENDING',
+          createdAt: '2026-07-17T00:00:02.000Z',
+          updatedAt: '2026-07-17T00:00:02.000Z',
+        },
+        {
+          id: 'outbox-b',
+          messageId: 'reply-b@example.com',
+          commandId: commandA,
+          kind: 'ERROR',
+          status: 'PENDING',
+          createdAt: '2026-07-17T00:00:01.000Z',
+          updatedAt: '2026-07-17T00:00:01.000Z',
+        },
+      ]);
+    });
+
+    it('returns [] for a command with no outbox rows', () => {
+      const commandId = new CommandStore(db).insertIfAbsent(commandInput()).record.id;
+
+      expect(store.findByCommandId(commandId)).toEqual([]);
+    });
+  });
+
+  // D-P4B11-1: the daemon's echo-reconciliation lookup (UNCERTAIN -> SENT).
+  describe('findByMessageId (D-P4B11-1)', () => {
+    it('round-trips a row by message_id and returns undefined for unknown ids', () => {
+      store.create({
+        id: 'outbox-1',
+        messageId: 'reply-1@example.com',
+        commandId: null,
+        kind: 'RESULT',
+        now: '2026-07-17T00:00:01.000Z',
+      });
+
+      expect(store.findByMessageId('reply-1@example.com')).toEqual({
+        id: 'outbox-1',
+        messageId: 'reply-1@example.com',
+        commandId: null,
+        kind: 'RESULT',
+        status: 'PENDING',
+        createdAt: '2026-07-17T00:00:01.000Z',
+        updatedAt: '2026-07-17T00:00:01.000Z',
+      });
+      expect(store.findByMessageId('unknown@example.com')).toBeUndefined();
+    });
+
+    it('cannot face multiple matches today: the schema\'s UNIQUE constraint on message_id rejects a second row outright', () => {
+      // The batch-11 plan assumed no unique constraint and asked for
+      // id-order-first tie-break semantics; schema v1 (migrations.ts) in fact
+      // declares `message_id TEXT UNIQUE`, so the multi-row state is
+      // unreachable through this store. This test pins the FACT that makes
+      // it unreachable; the ORDER BY id LIMIT 1 in findByMessageId stays as
+      // a documented defensive tie-break should the constraint ever relax.
+      store.create({
+        id: 'outbox-b',
+        messageId: 'shared@example.com',
+        commandId: null,
+        kind: 'ACK',
+        now: '2026-07-17T00:00:01.000Z',
+      });
+
+      expect(() =>
+        store.create({
+          id: 'outbox-a',
+          messageId: 'shared@example.com',
+          commandId: null,
+          kind: 'ACK',
+          now: '2026-07-17T00:00:02.000Z',
+        }),
+      ).toThrow(/UNIQUE constraint failed: outbox.message_id/);
+      expect(store.findByMessageId('shared@example.com')?.id).toBe('outbox-b');
+    });
+  });
 });
 
 describe('MetaStore (D-P2-10)', () => {

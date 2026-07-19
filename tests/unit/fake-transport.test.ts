@@ -327,6 +327,34 @@ describe('FakeMailTransport (D-P2-11 fake)', () => {
     });
   });
 
+  describe('mailboxStatus (D-P4B11-1)', () => {
+    it('mechanical default: FAKE_UID_VALIDITY, uidNext one past the highest uid seen', async () => {
+      const transport = new FakeMailTransport({ registerOutbox: noopRegisterOutbox });
+
+      await expect(transport.mailboxStatus()).resolves.toEqual({
+        uidValidity: FAKE_UID_VALIDITY,
+        uidNext: 1,
+      });
+
+      transport.deliver(incomingMail({ uid: 7 }));
+
+      await expect(transport.mailboxStatus()).resolves.toEqual({
+        uidValidity: FAKE_UID_VALIDITY,
+        uidNext: 8,
+      });
+    });
+
+    it('a scripted value wins over the mechanical default (UIDVALIDITY-change tests set this)', async () => {
+      const transport = new FakeMailTransport({ registerOutbox: noopRegisterOutbox });
+      transport.scriptedMailboxStatus = { uidValidity: '1690000001', uidNext: 42 };
+
+      await expect(transport.mailboxStatus()).resolves.toEqual({
+        uidValidity: '1690000001',
+        uidNext: 42,
+      });
+    });
+  });
+
   describe('markProcessed', () => {
     it('records the mail into the public processedMails list', async () => {
       const transport = new FakeMailTransport({ registerOutbox: noopRegisterOutbox });
