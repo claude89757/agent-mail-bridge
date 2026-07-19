@@ -170,10 +170,21 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   `create` supersedes (reason `REISSUED`) then inserts inside ONE
   transaction — atomicity mutation-verified twice, independently by
   implementer and reviewer (stripping the transaction wrapper flips the
-  rollback tests red). Still pending: reply parsing + mail format (blocked
-  on the real-device walkthrough, spec line 213), the quarantine ACTION on
-  a rejected verdict and the router lookup wiring (Phase 4 proper), and the
-  EXPIRED trigger timing (daemon batch).
+  rollback tests red). The routing side of "low confidence always clarifies"
+  is now a pinned pure function: `routeCommand` (`src/domain/routing.ts`)
+  admits exactly four verdicts (continue thread session / dispatch on a
+  UNIQUE exact match / clarify on ambiguity / clarify on no-match), takes
+  pre-extracted values plus pre-executed lookup results only — it never
+  sees the full index, so fuzzy matching is structurally impossible at
+  this layer, not merely forbidden — and the thread↔session mapping it
+  consults persists with a first-write invariant on the driver session id
+  (`src/store/sessionStore.ts`, migration 004: a recorded id is never
+  silently replaced; a different id is an anomaly and throws, per
+  ADR-0004's measured stable-thread_id semantics). Still pending: reply
+  parsing + mail format (blocked on the real-device walkthrough, spec
+  line 213), the quarantine ACTION on a rejected verdict and the wiring
+  of lookup → verdict → dispatch (next batch), and the EXPIRED trigger
+  timing (daemon batch).
 - **C9 — Outbound hygiene.** Replies go to self only (CC/BCC/attachments
   mechanically impossible), size-capped, with secrets, absolute paths, and
   large diffs redacted.

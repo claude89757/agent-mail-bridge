@@ -107,24 +107,75 @@ CREATE INDEX idx_agent_sessions_project ON agent_sessions(project_path);
 
 **Files:** Create `src/domain/routing.ts`; Test `tests/unit/domain-routing.test.ts`。
 
-- [ ] 失败测试先行（D-P4B7-3 第一组全部）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] 失败测试先行（D-P4B7-3 第一组全部）。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 2: migration 004 + SessionStore
 
 **Files:** Create `src/store/sessionStore.ts`; Modify `src/store/migrations.ts`;
 Test 并入 `tests/unit/store-database.test.ts`、`tests/unit/store-records.test.ts`。
 
-- [ ] 失败测试先行（D-P4B7-3 第二组全部，含既有阶梯 tip 测试 3→4 机械跟进）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] 失败测试先行（D-P4B7-3 第二组全部，含既有阶梯 tip 测试 3→4 机械跟进）。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 3: 批次收尾
 
-- [ ] 四件套全绿；threat-model C8 评注补一句（路由裁决的低置信澄清落点）；
+- [x] 四件套全绿；threat-model C8 评注补一句（路由裁决的低置信澄清落点）；
   architecture 表新增 router core 行；完成记录（移交说明：词抽取/澄清邮件
   组装等真机走查、dispatch 接线下批、recordDriverSessionId 的调用时机 =
   driver thread.started 后由 dispatch 管线负责）；
-- [ ] commit + push。
+- [x] commit + push。
+
+---
+
+## 完成记录（2026-07-19）
+
+三任务闭环。测试基线 29 文件 / 553 → **30 文件 / 576**（+23：T1 路由 13、
+T2 会话映射 9、T3 收尾补 FK pragma 断言 1；572 通过 + 4 live 默认 skip）；
+四件套全绿；零模型额度、零发信。
+
+### Commit 轨迹
+
+| Commit | 内容 |
+| --- | --- |
+| `29e0011` | 本计划落盘 |
+| `2eba7b7` | T1 routeCommand 四裁决纯函数（13 测试：2×3 组合、原序透传、term-null-matches-非空的确定性行为） |
+| `102db4c` | T2 migration 004 + SessionStore（+9 测试：往返/首写四分支/UNIQUE fail-closed/序/updated_at 变异杀手；三个既有测试文件 tip 断言机械跟进） |
+| 本提交 | T3 收尾：FK pragma 断言（审查 Minor-1）、threat-model C8、architecture 表、完成记录 |
+
+### 审查结论
+
+**✅ APPROVED，零 Critical/Important，3 Minor 全为移交素材。** 审查员抽验
+实现者宣称的 7 轮变异 **7/7 属实**（会话优先级弱化 / 唯一命中放宽 ≥1 /
+candidates 重排 / 幂等改 no-op / 首写改覆盖写 / ORDER BY 反转 / 索引抹除，
+每轮精确击杀对应用例），另自行跑 2×3 穷举矩阵（分布逐格一致）、
+Object.freeze 无变异探针、verdict 引用同一性实验。三个既有测试文件的
+每处改动逐条裁定为"意图保全的机械跟进"，无一处把该红断言改绿。
+
+### Minor 处置
+
+1. FK 无外键仅 doc 落地 → 本提交补 `PRAGMA foreign_key_list(agent_sessions)`
+   为空的运行时断言，设计钉死。
+2. 计划句「002/003 子阶梯用例不动」的假设不精确：003 块基线按 ladder tip=3
+   写，migration 004 落地后必然要钉 `version <= 3`（断言值一字未改，
+   e41e664 先例同构）。记录为计划措辞教训：「子阶梯用例不动」应表述为
+   「子阶梯断言意图不动」。
+3. verdict 载荷为输入对象的透传引用（candidates 两侧 readonly 编译期封死；
+   RoutingSessionView/RoutingCandidate 字段级 readonly 是未来加固候选，
+   属计划变更需新决策，不在本批）。
+
+### 移交说明
+
+1. **词抽取与邮件格式**：routeCommand 只收「已抽取的 term」；从邮件主题/
+   正文抽取 term 的规则、澄清邮件的候选展示格式，等真机走查（spec 213 行）
+   后另批锁定。
+2. **dispatch 接线归下批**：lookup（projectIndex.exactLookup）→ routeCommand
+   → 按裁决分派（DISPATCH_NEW ⇒ intent + worktree + driver；CONTINUE_SESSION
+   ⇒ resume；CLARIFY_* ⇒ 澄清流程）。`recordDriverSessionId` 的调用时机 =
+   dispatch 管线观察到 thread.started 之后（sessionStore 模块 doc 已写）。
+3. **CLARIFY_NO_MATCH 的候选组装**（"列出全部项目供选"）归澄清邮件组装批次
+   ——routeCommand 结构上拿不到全量索引，这是防模糊匹配的设计而非疏漏。
+4. **EXPIRED 扫描 / 索引重建时机**归 daemon 批次；识别网关接线仍等 ADR-0003。
 
 ---
 

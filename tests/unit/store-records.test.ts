@@ -768,6 +768,10 @@ describe('SessionStore (D-P4B7-2)', () => {
     expect(store.findByThreadKey('thread-key-0001')).toEqual(first);
   });
 
+  it('agent_sessions declares NO foreign key (a session spans many commands over its thread — pinned so a future FK to commands is a deliberate schema decision, not drift)', () => {
+    expect(db.pragma('foreign_key_list(agent_sessions)')).toEqual([]);
+  });
+
   describe('recordDriverSessionId (first-write invariant, ADR-0004 stable session identity)', () => {
     it('first write onto NULL persists the driver session id, with updated_at = the write now and created_at untouched', () => {
       const created = store.create(sessionInput());
