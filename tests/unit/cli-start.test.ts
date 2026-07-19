@@ -88,6 +88,11 @@ interface Harness {
   closed: number;
   fakeTicks: AssembledDaemon['ticks'];
   fakeMetaStore: AssembledDaemon['metaStore'];
+  /** The fake file sink (D-P5B13-4 tee): what runStart's buildLogSink
+   *  produced wrote/closed, plus the directory it was asked to build at. */
+  sinkWritten: string[];
+  sinkClosed: number;
+  sinkDirs: string[];
 }
 
 function makeHarness(options: HarnessOptions = {}): Harness {
@@ -146,6 +151,15 @@ function makeHarness(options: HarnessOptions = {}): Harness {
         /* unsubscribe no-op */
       },
       log: (line) => logs.push(line),
+      buildLogSink: (dir) => {
+        harness.sinkDirs.push(dir);
+        return {
+          write: (line) => harness.sinkWritten.push(line),
+          close: () => {
+            harness.sinkClosed += 1;
+          },
+        };
+      },
     },
     writer,
     logs,
@@ -154,6 +168,9 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     closed: 0,
     fakeTicks,
     fakeMetaStore,
+    sinkWritten: [],
+    sinkClosed: 0,
+    sinkDirs: [],
   };
   return harness;
 }
@@ -177,10 +194,14 @@ describe('runStart (D-P5B12-5)', () => {
     expect(deps?.homeDir).toBe(HOME);
     expect(deps?.sleep).toBe(h.io.sleep);
     expect(deps?.onShutdownSignal).toBe(h.io.onShutdownSignal);
-    expect(deps?.log).toBe(h.io.log);
+    // D-P5B13-4: the shell's log is the TEE wrapper (console + file sink)
+    // now, no longer io.log itself — the dedicated tee test below asserts
+    // both routes receive every line.
+    expect(deps?.log).not.toBe(h.io.log);
     expect(deps?.pollIntervalMs).toBe(45_000);
 
     expect(h.closed).toBe(1);
+    expect(h.sinkClosed).toBe(1);
 
     // RED LINE 2 display surface: nothing start prints or logs ever carries
     // the self address (and there are no credential values in scope at all).
@@ -197,7 +218,7 @@ describe('runStart (D-P5B12-5)', () => {
     expect((h.assembledConfigs[0] as { dryRun: boolean }).dryRun).toBe(true);
   });
 
-  it('a fatal shell outcome maps to exit 1 and close still runs', async () => {
+  it('a fatal shell outcome maps to exit 1 and close still runs (daemon AND file sink)', async () => {
     const h = makeHarness({
       runShellImpl: async () => ({ reason: 'fatal', error: new Error('3 consecutive failures') }),
     });
@@ -206,6 +227,29 @@ describe('runStart (D-P5B12-5)', () => {
 
     expect(exitCode).toBe(1);
     expect(h.closed).toBe(1);
+    expect(h.sinkClosed).toBe(1);
+  });
+
+  it('tees every daemon log line into the file sink built at resolveDefaultLogDir: both routes receive the lines, close comes once after the shell exits (D-P5B13-4)', async () => {
+    const h = makeHarness({
+      runShellImpl: async (deps): Promise<ShellOutcome> => {
+        deps.log('tee-probe-from-shell');
+        return { reason: 'signal' };
+      },
+    });
+
+    const exitCode = await runStart([], h.io);
+
+    expect(exitCode).toBe(0);
+    // The sink is built at the XDG-STATE default for the injected env/home.
+    expect(h.sinkDirs).toEqual(['/fake-home/.local/state/agent-mail-bridge/logs']);
+    // BOTH tee routes carry the shell's line AND start's own lifecycle
+    // lines — the file surface receives exactly what console receives.
+    for (const probe of ['tee-probe-from-shell', 'amb daemon starting', 'amb daemon stopped']) {
+      expect(h.logs.some((line) => line.includes(probe))).toBe(true);
+      expect(h.sinkWritten.some((line) => line.includes(probe))).toBe(true);
+    }
+    expect(h.sinkClosed).toBe(1);
   });
 
   it('config load failure: every error printed to stderr, exit 1, assemble never called', async () => {
@@ -236,6 +280,10 @@ describe('runStart (D-P5B12-5)', () => {
     // every shell line sharing this stderr stream.
     expect(err).toContain('<home>/.secrets/amb-test.env');
     expect(err).not.toContain('/fake-home');
+    // The file sink is only built once assembly succeeded — nothing to
+    // close on this path.
+    expect(h.sinkDirs).toEqual([]);
+    expect(h.sinkClosed).toBe(0);
   });
 
   it('logs rejected project roots from the assembly index report — path in scrubbed (placeholder) form', async () => {

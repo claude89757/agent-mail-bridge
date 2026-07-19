@@ -21,6 +21,13 @@
  * codex driver, real git/fs worktree io). Real IO happens only when the
  * daemon RUNS, never at binding time.
  *
+ * Daemon log lines are TEED (D-P5B13-4): once assembly succeeds, every
+ * line — start's own lifecycle lines and everything the shell emits — goes
+ * through both `io.log` (production: `console.error`) and the rotating
+ * file sink built at `resolveDefaultLogDir` (`./logSink.ts`), closed after
+ * the shell exits. Both routes receive the SAME already-scrubbed text, so
+ * the file surface shares the console surface's red-line-2 boundary.
+ *
  * RED LINES: the shell's `log` binds to `console.error` HERE — `src/cli/**`
  * is the eslint `no-console` exemption surface — and every line the shell
  * hands it is already scrubbed (`runDaemonShell`'s emit funnel).
@@ -52,8 +59,10 @@ import {
 import type { BridgeConfig, LoadConfigIo } from './config.js';
 import { loadConfig } from './config.js';
 import type { Writer } from './dispatch.js';
+import { buildDefaultLogFsOps, buildFileLogSink } from './logSink.js';
+import type { FileLogSink } from './logSink.js';
 import type { EnvLike } from './paths.js';
-import { resolveConfigPath } from './paths.js';
+import { resolveConfigPath, resolveDefaultLogDir } from './paths.js';
 
 const USAGE = 'usage: amb start [--dry-run]';
 
@@ -77,8 +86,11 @@ export interface StartIo {
   readonly sleep: (ms: number, abort: AbortSignal) => Promise<void>;
   /** The shell's signal seam — production: SIGINT/SIGTERM listeners. */
   readonly onShutdownSignal: (fn: () => void) => () => void;
-  /** The shell's log sink — production: `console.error`. */
+  /** The console half of the log tee — production: `console.error`. */
   readonly log: (line: string) => void;
+  /** The file half of the log tee (D-P5B13-4) — production:
+   *  `buildFileLogSink` with real fs and a scrubbed failure reporter. */
+  readonly buildLogSink: (dir: string) => FileLogSink;
 }
 
 function describeError(error: unknown): string {
@@ -134,13 +146,22 @@ export async function runStart(args: readonly string[], io: StartIo): Promise<nu
     return 1;
   }
 
+  // D-P5B13-4: the log tee. Built only once assembly succeeded (earlier
+  // failures already reported through writer.err); every line from here on
+  // reaches console AND file with identical, already-scrubbed text.
+  const sink = io.buildLogSink(resolveDefaultLogDir(io.env, io.homedir));
+  const log = (line: string): void => {
+    io.log(line);
+    sink.write(line);
+  };
+
   try {
-    io.log(
+    log(
       `amb daemon starting (poll every ${String(config.pollIntervalSeconds)}s, ` +
         `dry-run: ${config.dryRun ? 'yes' : 'no'})`,
     );
     for (const rejected of assembled.indexRejected) {
-      io.log(scrub(`project root rejected: ${rejected.path} (${rejected.reason})`));
+      log(scrub(`project root rejected: ${rejected.path} (${rejected.reason})`));
     }
 
     const outcome = await io.runShell({
@@ -149,18 +170,19 @@ export async function runStart(args: readonly string[], io: StartIo): Promise<nu
       homeDir: assembled.homeDir,
       sleep: io.sleep,
       onShutdownSignal: io.onShutdownSignal,
-      log: io.log,
+      log,
       pollIntervalMs: config.pollIntervalSeconds * 1000,
     });
 
     if (outcome.reason === 'signal') {
-      io.log('amb daemon stopped (shutdown signal)');
+      log('amb daemon stopped (shutdown signal)');
       return 0;
     }
-    io.log('amb daemon stopped (fatal — see the errors above)');
+    log('amb daemon stopped (fatal — see the errors above)');
     return 1;
   } finally {
     await assembled.close();
+    sink.close();
   }
 }
 
@@ -215,9 +237,10 @@ export function buildProductionAssemblyBuilders(): AssemblyBuilders {
  * finished shell leaves the default signal disposition behind it.
  */
 export function buildRealStartIo(writer: Writer): StartIo {
+  const home = osHomedir();
   return {
     env: process.env,
-    homedir: osHomedir(),
+    homedir: home,
     readFileSync: (path) => fsReadFileSync(path, 'utf8'),
     writer,
     assemble: (config) => assembleDaemon(config, buildProductionAssemblyBuilders()),
@@ -255,10 +278,18 @@ export function buildRealStartIo(writer: Writer): StartIo {
         process.off('SIGTERM', handler);
       };
     },
-    // The src/cli/** no-console exemption surface: the ONE production log
-    // sink for the daemon shell (text arrives already scrubbed).
+    // The src/cli/** no-console exemption surface: the console half of the
+    // daemon log tee (text arrives already scrubbed).
     log: (line) => {
       console.error(line);
     },
+    // The file half (D-P5B13-4). The sink's own degrade notice is the ONE
+    // line it originates itself — an fs error message can carry an expanded
+    // home path, so it goes through the same scrub needle as every other
+    // stderr line here (red line 2's display surface).
+    buildLogSink: (dir) =>
+      buildFileLogSink(dir, buildDefaultLogFsOps(), (line) => {
+        console.error(scrubText(line, { worktreePath: null, homeDir: home }));
+      }),
   };
 }

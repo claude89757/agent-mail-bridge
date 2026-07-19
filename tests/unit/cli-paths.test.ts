@@ -4,6 +4,7 @@ import {
   expandTilde,
   resolveConfigPath,
   resolveDefaultDbPath,
+  resolveDefaultLogDir,
   resolveDefaultWorktreesRoot,
 } from '../../src/cli/paths.js';
 
@@ -82,6 +83,35 @@ describe('resolveDefaultWorktreesRoot (D-P5B12-1)', () => {
     expect(resolveDefaultWorktreesRoot(env, HOME)).toBe(
       resolveDefaultDbPath(env, HOME).replace(/\/bridge\.db$/, '/worktrees'),
     );
+  });
+});
+
+// D-P5B13-4: logs are STATE, not DATA (XDG Base Directory) — the log
+// directory therefore follows XDG_STATE_HOME while db/worktrees stay under
+// XDG_DATA_HOME untouched.
+describe('resolveDefaultLogDir (D-P5B13-4)', () => {
+  it('uses $XDG_STATE_HOME/agent-mail-bridge/logs when XDG_STATE_HOME is set', () => {
+    const result = resolveDefaultLogDir({ XDG_STATE_HOME: '/fake-xdg-state' }, HOME);
+
+    expect(result).toBe('/fake-xdg-state/agent-mail-bridge/logs');
+  });
+
+  it('falls back to <homedir>/.local/state/agent-mail-bridge/logs when XDG_STATE_HOME is unset', () => {
+    const result = resolveDefaultLogDir({}, HOME);
+
+    expect(result).toBe('/fake-home/.local/state/agent-mail-bridge/logs');
+  });
+
+  it('treats an empty-string XDG_STATE_HOME the same as unset', () => {
+    const result = resolveDefaultLogDir({ XDG_STATE_HOME: '' }, HOME);
+
+    expect(result).toBe('/fake-home/.local/state/agent-mail-bridge/logs');
+  });
+
+  it('ignores XDG_DATA_HOME entirely (logs are state, not data)', () => {
+    const result = resolveDefaultLogDir({ XDG_DATA_HOME: '/fake-xdg-data' }, HOME);
+
+    expect(result).toBe('/fake-home/.local/state/agent-mail-bridge/logs');
   });
 });
 

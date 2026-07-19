@@ -5,10 +5,12 @@
  * `os.homedir()` read directly), so tests can pin them to fixed fake values
  * and `main.ts` (Task 3) is the only place real values are read.
  *
- * Follows the two XDG Base Directory variables this CLI needs:
+ * Follows the three XDG Base Directory variables this CLI needs:
  *   - `XDG_CONFIG_HOME` (config file), falling back to `<homedir>/.config`.
  *   - `XDG_DATA_HOME` (default SQLite store), falling back to
  *     `<homedir>/.local/share`.
+ *   - `XDG_STATE_HOME` (log files — logs are state, not data), falling back
+ *     to `<homedir>/.local/state`.
  * A variable that is present but empty is treated the same as unset. Beyond
  * that, values are used as-is — e.g. a relative `XDG_CONFIG_HOME` is not
  * itself rejected here; that is out of scope for v1.
@@ -63,6 +65,20 @@ export function resolveDefaultDbPath(env: EnvLike, homedir: string): string {
 export function resolveDefaultWorktreesRoot(env: EnvLike, homedir: string): string {
   const base = readXdgVar(env, 'XDG_DATA_HOME') ?? join(homedir, '.local', 'share');
   return join(base, APP_DIR, 'worktrees');
+}
+
+/**
+ * Default scrubbed-log directory (D-P5B13-4):
+ * `$XDG_STATE_HOME/agent-mail-bridge/logs`, falling back to
+ * `<homedir>/.local/state/agent-mail-bridge/logs`. Logs follow the XDG
+ * STATE directory — they are operational state, not user data — so this
+ * deliberately does NOT share `XDG_DATA_HOME` with `resolveDefaultDbPath`/
+ * `resolveDefaultWorktreesRoot`. Consumed by `src/cli/start.ts` (the tee's
+ * file sink) and `src/cli/service.ts` (launchd's Standard*Path).
+ */
+export function resolveDefaultLogDir(env: EnvLike, homedir: string): string {
+  const base = readXdgVar(env, 'XDG_STATE_HOME') ?? join(homedir, '.local', 'state');
+  return join(base, APP_DIR, 'logs');
 }
 
 /**
