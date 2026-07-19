@@ -23,8 +23,8 @@ clarification mail flow, a full end-to-end run).
   advances, duplicates converging on normalized `Message-ID`.
 - Deterministic routing — thread continuity first (a reply resumes that
   thread's agent session), then a unique exact match against the
-  operator-configured project allowlist; anything ambiguous becomes a
-  clarification request, never a fuzzy guess.
+  operator-configured project allowlist; anything ambiguous is answered
+  with a reply naming the candidates, never a fuzzy guess.
 - Codex driver on `codex exec --json` with session capture and resume.
 - Bridge-owned git worktree per task — the operator's own checkouts are
   never touched.

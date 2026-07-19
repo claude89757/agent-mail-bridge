@@ -49,9 +49,11 @@ Security and privacy documents are headline features, not appendices:
 [threat model](docs/threat-model.md) · [security](docs/security.md) ·
 [privacy](docs/privacy.md).
 
-Highlights: DKIM-verified self-mail only, zero model calls for invalid mail,
-bridge-owned worktree isolation (your working tree is never touched),
-`workspace-write` sandbox ceiling, redacted replies to yourself only.
+Highlights: self-mail-only identity gate (the DKIM factor is built and
+awaits wiring — [ADR-0003](docs/adr/0003-self-mail-carries-no-auth-results.md)),
+zero model calls for invalid mail, bridge-owned worktree isolation (your
+working tree is never touched), `workspace-write` sandbox ceiling, redacted
+replies to yourself only.
 
 **Intended use**: your own mailbox, your own device, your own projects. Not
 for circumventing employer policy; don't bind a managed corporate mailbox.
@@ -158,8 +160,10 @@ same thread; replying to that thread continues the same codex session.
 | `amb uninstall` | Print the deactivation command, remove the service file (the only file amb ever deletes), and list the remaining artifacts for manual cleanup. |
 | `amb logout` | Placeholder — exits 2; credential-storage cleanup is pending the keychain decision. |
 
-Exit codes are uniform: `0` success, `1` runtime failure, `2` usage error
-(unknown command or flag). Two command-specific readings: `amb doctor` exits
+Exit codes are uniform: `0` success, `1` runtime failure, `2` usage error —
+an unknown command, or an unknown flag on the commands that take flags
+(`setup`, `start`, `install`, `uninstall`; the flagless commands currently
+ignore extra arguments). Two command-specific readings: `amb doctor` exits
 `1` when any check fails, and `amb start` exits `0` when stopped by
 SIGINT/SIGTERM but `1` after three consecutive failed poll rounds (restart
 policy belongs to the service manager). `amb --help` lists the commands;
@@ -172,8 +176,10 @@ policy belongs to the service manager). `amb --help` lists the commands;
 (`~/.config/agent-mail-bridge/config.json` when `XDG_CONFIG_HOME` is unset),
 mode 0600. You can also edit it by hand — setup and a hand-edited file are
 validated against exactly the same schema, and unknown fields are rejected
-rather than ignored. Every path value must be absolute or start with `~/`,
-never relative.
+rather than ignored. `credentialsEnvFile`, `dbPath` and `worktreesRoot`
+must be absolute or start with `~/` (validated); use the same form for
+`projects.roots` and alias targets too — relative entries there pass shape
+validation but resolve against the daemon's working directory at runtime.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -203,8 +209,9 @@ time window — before persisting it (idempotently, keyed on normalized
 `Message-ID`) and routing it. Routing is deterministic, never fuzzy: thread
 continuity first (a reply in a known thread resumes that thread's codex
 session), then a unique exact match against the configured project index;
-anything ambiguous is answered with a clarification request instead of a
-guess. Dispatch runs `codex exec --json` inside a bridge-owned git worktree
+anything ambiguous is answered with a reply naming the candidates instead
+of a guess (the interactive clarification flow — replying `1`/`2`/`new` —
+awaits the real-device walkthrough). Dispatch runs `codex exec --json` inside a bridge-owned git worktree
 with the `workspace-write` sandbox ceiling, and the outcome is composed into
 a reply that passes a redaction funnel (path placeholders, secret-pattern
 masking) before the SMTP sender — recipient locked to your own address —

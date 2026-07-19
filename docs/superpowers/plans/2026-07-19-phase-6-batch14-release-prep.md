@@ -95,20 +95,20 @@ git tag、GitHub Release（红线 4，用户执行）；AGENTS.md 英文版（sp
 
 **Files:** Modify `README.md`。
 
-- [ ] 逐命令核对 → 重写 → `npm pack --dry-run` 确认入包 → commit。
+- [x] 逐命令核对 → 重写 → `npm pack --dry-run` 确认入包 → commit。
 
 ### Task 2: SECURITY.md + CHANGELOG.md + package.json
 
 **Files:** Create `SECURITY.md`、`CHANGELOG.md`; Modify `package.json`、
 `docs/security.md`（状态行）。
 
-- [ ] 写作 → `npm pack --dry-run` 核对 → 四件套 → commit。
+- [x] 写作 → `npm pack --dry-run` 核对 → 四件套 → commit。
 
 ### Task 3: 批次收尾（编排者）
 
-- [ ] 审查（文档准确性 + 红线显示面）→ 修复 → architecture 状态行 +
+- [x] 审查（文档准确性 + 红线显示面）→ 修复 → architecture 状态行 +
   完成记录 + 发布位交接文案；
-- [ ] commit + push。
+- [x] commit + push。
 
 ---
 
@@ -121,3 +121,74 @@ git tag、GitHub Release（红线 4，用户执行）；AGENTS.md 英文版（sp
   10 分钟指标达成，写 target）。
 - 一致性：命令面以 src/cli/** 现实现为唯一事实源，写前核对。
 - 无占位符：结构与条目数已锁定。
+
+---
+
+## 完成记录（2026-07-19，批次十四收尾）
+
+### 提交清单
+
+| commit | 内容 |
+| --- | --- |
+| `946739d` | 本 plan 落盘 |
+| `614e70d` | T1：README 重写——Status 三档诚实清单、Quickstart（from-source + allowlist 步骤）、9 命令 reference 表、Configuration 11 字段表、How it works；20 项命令面逐条对源码核对 |
+| `7b0daaa` | T2：root SECURITY.md（GitHub private vulnerability reporting 唯一渠道、acknowledge ≤7 天、0.1.x 支持行）+ CHANGELOG.md（Keep a Changelog，15 条）+ package.json 0.0.0→0.1.0、files 增两文档；docs/security.md 改指 root |
+| 本提交 | T3 收尾：审查 1 Important + 4 可修 Minor 全兑现（见下）+ architecture 管线图 planned 注记 + Phase 5 验收报告入库 + 本记录 |
+
+零代码行为变更；四件套照常全绿（838）；`npm pack --dry-run` 143 files /
+214.5 kB，零夹带零真实值。
+
+### 审查故事（钉 946739d..7b0daaa）
+
+- **CHANGES_REQUIRED → 收尾就地兑现**。审查者独立抽查 24 条命令面
+  （超出要求的 10 条），实测 `--help`/`--version`/各用法错误分支 +
+  源码逐位核对；显示面目检（占位地址/波浪线/低熵）、12 个仓内链接、
+  `npm pack --dry-run` 复跑均通过；CHANGELOG 15/15 条溯源成立。
+- **I-1（唯一 Important）**：README「Security first」区 "DKIM-verified
+  self-mail only" 与 20 行之上 Status 的 "DKIM factor…not wired (ADR-0003
+  pending)" 自相矛盾——plan 锁定的「摘要区不动」输给同 plan 的诚实定位
+  原则。修：改述为 self-mail-only 网关 + DKIM 因子 built-awaiting-wiring
+  并链 ADR-0003。
+- **M-1**：退出码段对 4 个无 flag 命令不成立（doctor/status/pause/resume
+  吞多余参数）——措辞限定为「接受 flag 的命令」，代码侧根治归移交。
+- **M-2**：「clarification request」一词混用 stopgap 现状与未落地交互流
+  ——README/CHANGELOG 两处改为「reply naming the candidates」并注明交互
+  流待真机走查。
+- **M-3（裁定实现者担忧②）**：keywords 删 `claude-code`（spec D2：v0.1
+  codex-only；npm 检索面不许超前），v0.2 随 ClaudeCodeDriver 加回。
+- **M-4**：路径校验措辞点名生效字段（credentialsEnvFile/dbPath/
+  worktreesRoot 强校验；projects.roots/aliases 仅 shape，相对值运行时
+  按 daemon cwd 解析——如实写出）。
+- **M-5** 归入下方交接清单。顺带观察兑现其一（architecture 管线图
+  IMAP/IDLE 与 DKIM 节点加 planned/pending 注记）；另一（setup.ts:319
+  过期文案）属代码变更归移交。
+- 实现者四条偏离全部 APPROVED（IDLE 措辞如实化、security 报告段矛盾
+  消除、docs/README.md 行、Quickstart allowlist 步骤——最后一条属
+  「不加则 Quickstart 走不通」的必要偏离）。
+
+### 发布位交接清单（红线 4：以下全部由用户执行）
+
+1. **开启 Private vulnerability reporting**：GitHub 仓库 Settings →
+   Security → 勾选 Private vulnerability reporting——SECURITY.md 的唯一
+   报告渠道依赖此设置，不开启则该 URL 对报告者 404；
+2. CHANGELOG `[0.1.0] - Unreleased` 补上打 tag 当日日期；
+3. `npm publish --dry-run` 复核打包清单 → `npm publish`；
+4. `git tag v0.1.0 && git push --tags`；
+5. GitHub Release：正文可直接引用 CHANGELOG 0.1.0 段。
+
+（建议顺序：1/2 先行，3-5 在 E2E 通过后执行。）
+
+### 移交清单（后续代码批）
+
+1. `setup.ts:319` 成功输出仍说 "background daemon install arrives with
+   the full Phase 5 release"——install 已存在，文案过期（改动需同步
+   pin 测试）；
+2. 无 flag 命令（doctor/status/pause/resume）拒绝多余参数统一退 2
+   （M-1 的代码侧根治）；
+3. `claude-code` keyword 随 v0.2 ClaudeCodeDriver 恢复。
+
+### 经验沉淀
+
+- **「保留区不动」类锁定要给诚实定位让路**：plan 把 Security first 摘要
+  锁为不动，恰好锁住了一句因语境变化（Phase-0 横幅移除）而变成超前宣称
+  的话——文档批的锁定决策应附带「与事实冲突时以事实为准」的例外条款。

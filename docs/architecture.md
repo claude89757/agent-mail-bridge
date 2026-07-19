@@ -13,8 +13,8 @@ the coding agent on your own device from your own mailbox.
 
 ```mermaid
 flowchart LR
-    A["Phone mail app<br/>(mail to yourself)"] --> B["IMAP IDLE watcher<br/>(MailTransport)"]
-    B --> C["Identity gate<br/>DKIM/SPF + From==To==self<br/>+ loop guard + readyAt"]
+    A["Phone mail app<br/>(mail to yourself)"] --> B["IMAP watcher<br/>(MailTransport; 30 s poll today,<br/>IDLE planned)"]
+    B --> C["Identity gate<br/>From==To==self + loop guard<br/>+ readyAt (DKIM factor built,<br/>wiring pends ADR-0003)"]
     C --> D["SQLite state machine<br/>idempotency + transactional outbox"]
     D --> E["Deterministic router<br/>project/session candidate scoring"]
     E -->|single high-confidence match| F["CodexDriver<br/>codex exec --json / resume"]
