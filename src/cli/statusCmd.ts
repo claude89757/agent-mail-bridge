@@ -26,7 +26,6 @@
  * imported as VALUES (the doctor.ts/setup.ts precedent), and the handle
  * type is `ReturnType<typeof openDatabase>`.
  */
-import { INTENT_STATUSES } from '../domain/intentState.js';
 import { ClarificationStore } from '../store/clarificationStore.js';
 import { CommandStore } from '../store/commandStore.js';
 import type { openDatabase } from '../store/database.js';
@@ -118,13 +117,15 @@ export function runStatus(io: StatusIo): StatusCommandResult {
     const metaStore = new MetaStore(db);
     const readyAt = metaStore.getReadyAt();
     const paused = metaStore.getPaused();
+    // The pause flag's last-changed instant (the `setPaused` doc promise);
+    // omitted entirely when the flag was never touched — a fresh install
+    // shows plain `paused: no`, not an invented timestamp.
+    const pausedChangedAt = metaStore.getPausedChangedAt();
+    const pausedChangedSuffix = pausedChangedAt === null ? '' : ` (last changed at ${pausedChangedAt})`;
     const watermarks = metaStore.listWatermarks();
 
     const commandCounts = new CommandStore(db).countByStatus();
-    const intentStore = new IntentStore(db);
-    const intentCounts = Object.fromEntries(
-      INTENT_STATUSES.map((status) => [status, intentStore.findByStatus(status).length]),
-    );
+    const intentCounts = new IntentStore(db).countByStatus();
     const uncertainOutbox = new OutboxStore(db).findByStatus('UNCERTAIN').length;
     const pendingClarifications = new ClarificationStore(db).countByStatus().PENDING;
 
@@ -134,8 +135,8 @@ export function runStatus(io: StatusIo): StatusCommandResult {
         ? 'readyAt: not set (run `amb setup` to record the first-install fence)'
         : `readyAt: ${readyAt}`,
       paused
-        ? 'paused: yes (the daemon skips mail processing each round until `amb resume`)'
-        : 'paused: no',
+        ? `paused: yes (the daemon skips mail processing each round until \`amb resume\`)${pausedChangedSuffix}`
+        : `paused: no${pausedChangedSuffix}`,
       `commands: ${formatCounts(commandCounts)}`,
       `intents: ${formatCounts(intentCounts)}`,
       `outbox UNCERTAIN (awaiting echo reconciliation): ${String(uncertainOutbox)}`,

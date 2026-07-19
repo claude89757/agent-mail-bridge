@@ -23,7 +23,7 @@
  */
 import type { Database } from 'better-sqlite3';
 
-import { assertIntentTransition, type IntentStatus } from '../domain/intentState.js';
+import { assertIntentTransition, INTENT_STATUSES, type IntentStatus } from '../domain/intentState.js';
 
 /** Raw `dispatch_intents` row shape as returned by better-sqlite3 (snake_case). */
 interface IntentRow {
@@ -153,6 +153,29 @@ export class IntentStore {
       .prepare<[], { count: number }>(`SELECT COUNT(*) AS count FROM dispatch_intents`)
       .get();
     return row?.count ?? 0;
+  }
+
+  /**
+   * Row count per status, ZERO-FILLED over `INTENT_STATUSES` (D-P5B12-5,
+   * the `commandStore.countByStatus` pattern): every legal status appears
+   * in the answer even at 0 and in the state machine's declaration order,
+   * so `amb status` renders one stable line without special-casing absent
+   * buckets — and one GROUP BY replaces a per-status `findByStatus` sweep.
+   */
+  countByStatus(): Record<IntentStatus, number> {
+    const counts = Object.fromEntries(INTENT_STATUSES.map((status) => [status, 0])) as Record<
+      IntentStatus,
+      number
+    >;
+    const rows = this.db
+      .prepare<[], { status: string; count: number }>(
+        `SELECT status, COUNT(*) AS count FROM dispatch_intents GROUP BY status`,
+      )
+      .all();
+    for (const row of rows) {
+      counts[row.status as IntentStatus] = row.count;
+    }
+    return counts;
   }
 
   private getRowById(id: string): IntentRow | undefined {

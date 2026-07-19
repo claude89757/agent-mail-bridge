@@ -707,6 +707,16 @@ describe('MetaStore (D-P2-10)', () => {
       expect(store.getReadyAt()).toBe('2026-07-17T00:00:00.000Z');
       expect(store.getPaused()).toBe(true);
     });
+
+    it('getPausedChangedAt is null before any setPaused, then tracks the LAST change instant (the doc promise `status` reports)', () => {
+      expect(store.getPausedChangedAt()).toBeNull();
+
+      store.setPaused(true, '2026-07-19T00:00:00.000Z');
+      expect(store.getPausedChangedAt()).toBe('2026-07-19T00:00:00.000Z');
+
+      store.setPaused(false, '2026-07-19T06:00:00.000Z');
+      expect(store.getPausedChangedAt()).toBe('2026-07-19T06:00:00.000Z');
+    });
   });
 });
 
@@ -1336,6 +1346,37 @@ describe('status-command count surfaces (D-P5B12-5)', () => {
       CONSUMED: 0,
       EXPIRED: 1,
       SUPERSEDED: 0,
+    });
+  });
+
+  it('IntentStore.countByStatus is zero-filled on a fresh database and counts every status bucket (same aggregate discipline as commands/clarifications)', () => {
+    const commandStore = new CommandStore(db);
+    const store = new IntentStore(db);
+
+    expect(store.countByStatus()).toEqual({
+      PENDING: 0,
+      RUNNING: 0,
+      COMPLETED: 0,
+      FAILED: 0,
+      SKIPPED_DRY_RUN: 0,
+    });
+
+    const first = commandStore.insertIfAbsent(
+      commandInput({ messageId: 'i-1@example.com', status: 'READY_FOR_DISPATCH' }),
+    );
+    const second = commandStore.insertIfAbsent(
+      commandInput({ messageId: 'i-2@example.com', status: 'READY_FOR_DISPATCH' }),
+    );
+    store.createForCommand('di-count-1', first.record.id, false, '2026-07-19T00:00:00.000Z');
+    store.createForCommand('di-count-2', second.record.id, false, '2026-07-19T00:00:01.000Z');
+    store.transition('di-count-2', 'RUNNING', null, '2026-07-19T00:00:02.000Z');
+
+    expect(store.countByStatus()).toEqual({
+      PENDING: 1,
+      RUNNING: 1,
+      COMPLETED: 0,
+      FAILED: 0,
+      SKIPPED_DRY_RUN: 0,
     });
   });
 

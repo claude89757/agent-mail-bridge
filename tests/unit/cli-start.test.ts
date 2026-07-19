@@ -1,20 +1,52 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RejectedDir } from '../../src/application/projectIndex.js';
 import type { Writer } from '../../src/cli/dispatch.js';
 import { resolveConfigPath } from '../../src/cli/paths.js';
-import { runStart } from '../../src/cli/start.js';
+import { buildProductionAssemblyBuilders, runStart } from '../../src/cli/start.js';
 import type { StartIo } from '../../src/cli/start.js';
 import type { AssembledDaemon } from '../../src/daemon/assembly.js';
 import type { ShellDeps, ShellOutcome } from '../../src/daemon/shell.js';
+import { buildImapflowFactory } from '../../src/transports/imapRead.js';
 
 // Guards D-P5B12-5's `amb start` half: loadConfig → assembleDaemon →
 // runDaemonShell wiring, the --dry-run config override, exit-code mapping
 // (signal=0 / fatal=1), close-always semantics, and the red-line-2 display
 // surface (selfAddress and credential material never appear in any output
-// or log line). `assemble`/`runShell` are INJECTED fakes — the real
-// assembly/shell have their own suites; this file only pins the CLI glue,
-// per the cli-doctor/cli-setup io-injection precedent.
+// or log line; start's own log/err lines pass through scrubText, matching
+// the shell's discipline on the same stderr stream). `assemble`/`runShell`
+// are INJECTED fakes — the real assembly/shell have their own suites; this
+// file only pins the CLI glue, per the cli-doctor/cli-setup io-injection
+// precedent.
+//
+// The `buildProductionAssemblyBuilders` describe at the bottom is the
+// batch-12 review's Important-1 guard: `no-console` does not police
+// `src/cli/**` (exempt) nor raw `process.stderr.write` anywhere, so a
+// credential value reaching ANY stdio channel from the production binding
+// area would survive lint + every other test. That guard spies every
+// stdio sink while running the two credential-touching builders — both
+// pure construction, ZERO network (see the describe comment). `imapflow`
+// is module-mocked file-wide so even an accidental construct-and-connect
+// could never open a real connection.
+
+const imapflowCaptured = vi.hoisted(() => ({ ctorOpts: [] as Record<string, unknown>[] }));
+
+vi.mock('imapflow', () => ({
+  ImapFlow: class {
+    constructor(opts: Record<string, unknown>) {
+      imapflowCaptured.ctorOpts.push(opts);
+    }
+
+    connect(): Promise<void> {
+      // No-op: with the module mocked there is NOTHING that could reach
+      // the network (red line: this batch never opens a real connection).
+      return Promise.resolve();
+    }
+  },
+}));
 
 const HOME = '/fake-home';
 const SELF = 'bridge-user@example.com';
@@ -185,7 +217,7 @@ describe('runStart (D-P5B12-5)', () => {
     expect(h.writer.errLines.join('\n')).toContain('config');
   });
 
-  it('assemble failure (e.g. missing credentials key): message to stderr, exit 1, shell never runs', async () => {
+  it('assemble failure (e.g. missing credentials key): message to stderr SCRUBBED (home-dir paths become <home>), exit 1, shell never runs', async () => {
     const h = makeHarness({
       assembleImpl: () =>
         Promise.reject(
@@ -197,18 +229,24 @@ describe('runStart (D-P5B12-5)', () => {
 
     expect(exitCode).toBe(1);
     expect(h.shellDeps).toHaveLength(0);
-    expect(h.writer.errLines.join('\n')).toContain('missing AMB_IMAP_USER');
+    const err = h.writer.errLines.join('\n');
+    expect(err).toContain('missing AMB_IMAP_USER');
+    // Review Minor-1: start's own lines obey the same scrub discipline as
+    // every shell line sharing this stderr stream.
+    expect(err).toContain('<home>/.secrets/amb-test.env');
+    expect(err).not.toContain('/fake-home');
   });
 
-  it('logs rejected project roots from the assembly index report', async () => {
+  it('logs rejected project roots from the assembly index report — path in scrubbed (placeholder) form', async () => {
     const h = makeHarness({
       indexRejected: [{ path: '/fake-home/github-gone', reason: 'ROOT_NOT_FOUND' }],
     });
 
     await runStart([], h.io);
 
-    expect(h.logs.join('\n')).toContain('/fake-home/github-gone');
-    expect(h.logs.join('\n')).toContain('ROOT_NOT_FOUND');
+    const logs = h.logs.join('\n');
+    expect(logs).toContain('project root rejected: <home>/github-gone (ROOT_NOT_FOUND)');
+    expect(logs).not.toContain('/fake-home');
   });
 
   it('an unknown flag is rejected with usage on stderr, exit 2, nothing assembled', async () => {
@@ -219,5 +257,97 @@ describe('runStart (D-P5B12-5)', () => {
     expect(exitCode).toBe(2);
     expect(h.assembledConfigs).toHaveLength(0);
     expect(h.writer.errLines.join('\n')).toContain('usage');
+  });
+});
+
+// Review Important-1 (batch 12): the machine-verifiable stdio guard for the
+// production binding area. Both builders exercised here are PURE
+// CONSTRUCTION with zero network: `readCredentialsFile` reads one local
+// temp file; `buildTransport` binds `createImapReadTransport` over a lazy
+// imapflow factory (ImapFlow is only ever constructed inside
+// `factory.connect()` — module-mocked above anyway) and
+// `buildDefaultSmtpSend`, whose `nodemailer.createTransport` opens no
+// socket until a send is attempted (none is).
+describe('buildProductionAssemblyBuilders — credentials stdio guard (red line 2, Important-1)', () => {
+  const FIXTURE_USER = 'stdio-guard-user@example.com';
+  const FIXTURE_PASS = 'Aa-Aa-Tok-7777';
+
+  let dir: string;
+  let envPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'amb-cli-start-guard-test-'));
+    envPath = join(dir, 'amb-test.env');
+    writeFileSync(
+      envPath,
+      `AMB_TEST_IMAP_USER=${FIXTURE_USER}\nAMB_TEST_IMAP_PASS=${FIXTURE_PASS}\n`,
+      'utf8',
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('readCredentials + buildTransport emit NOTHING carrying the credential values on any stdio channel (console.* AND raw process std streams)', async () => {
+    // Spy every sink `no-console` cannot police: src/cli/** is exempt from
+    // the rule entirely, and raw `process.std*.write` is invisible to it
+    // everywhere — exactly the review probes' two survival channels.
+    const consoleSpies = [
+      vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+    ];
+    const streamSpies = [
+      vi.spyOn(process.stdout, 'write').mockImplementation(() => true),
+      vi.spyOn(process.stderr, 'write').mockImplementation(() => true),
+    ];
+
+    let credentials: { user: string; pass: string };
+    let transportShape: string;
+    try {
+      const builders = buildProductionAssemblyBuilders();
+      credentials = builders.readCredentials(envPath);
+      const transport = builders.buildTransport({
+        selfAddress: 'bridge-user@example.com',
+        credentials,
+        registerOutbox: () => Promise.resolve(),
+      });
+      // Constructed, never driven: no method is invoked on it.
+      transportShape = typeof transport.fetchSince;
+    } finally {
+      // Restore BEFORE assertions so a failure prints normally.
+      vi.restoreAllMocks();
+    }
+
+    expect(credentials).toEqual({ user: FIXTURE_USER, pass: FIXTURE_PASS });
+    expect(transportShape).toBe('function');
+
+    const allOutput = [...consoleSpies, ...streamSpies]
+      .flatMap((spy) => spy.mock.calls.flat())
+      .map(String)
+      .join('\n');
+    expect(allOutput).not.toContain(FIXTURE_USER);
+    expect(allOutput).not.toContain(FIXTURE_PASS);
+  });
+
+  it('the imapflow client the production factory builds is constructed with logger: false and no debug switch (batch-5 red-line-2 precedent), creds confined to auth', async () => {
+    imapflowCaptured.ctorOpts.length = 0;
+
+    const factory = buildImapflowFactory({
+      host: 'imap.gmail.com',
+      port: 993,
+      user: FIXTURE_USER,
+      pass: FIXTURE_PASS,
+    });
+    await factory.connect(); // mocked ImapFlow — zero network (file header)
+
+    expect(imapflowCaptured.ctorOpts).toHaveLength(1);
+    const opts = imapflowCaptured.ctorOpts[0];
+    expect(opts?.logger).toBe(false);
+    expect(opts).not.toHaveProperty('debug');
+    expect(opts?.secure).toBe(true);
+    expect(opts?.auth).toEqual({ user: FIXTURE_USER, pass: FIXTURE_PASS });
   });
 });

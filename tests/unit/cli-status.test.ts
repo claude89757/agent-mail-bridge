@@ -164,7 +164,7 @@ describe('runStatus (D-P5B12-5)', () => {
     expect(text).toContain('watermark: none recorded yet');
   });
 
-  it('shows paused: yes after runPause flipped the flag', () => {
+  it('shows paused: yes after runPause flipped the flag, WITH the change instant (Minor-2: pausedChangedAt read back out)', () => {
     writeConfig();
     seed(() => {
       /* schema only */
@@ -173,7 +173,22 @@ describe('runStatus (D-P5B12-5)', () => {
 
     const result = runStatus(makeIo());
 
-    expect(result.messages.join('\n')).toContain('paused: yes');
+    const text = result.messages.join('\n');
+    expect(text).toContain('paused: yes');
+    expect(text).toContain(`last changed at ${NOW.toISOString()}`);
+  });
+
+  it('omits the change instant when the pause flag has never been touched', () => {
+    writeConfig();
+    seed(() => {
+      /* schema only */
+    });
+
+    const result = runStatus(makeIo());
+
+    const text = result.messages.join('\n');
+    expect(text).toContain('paused: no');
+    expect(text).not.toContain('last changed');
   });
 
   it('fails closed with exit 1 (config errors listed) when the config cannot load', () => {

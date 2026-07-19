@@ -86,6 +86,16 @@ export class MetaStore {
     upsert.run({ key: PAUSED_CHANGED_AT_KEY, value: now });
   }
 
+  /** When the pause flag last changed (`setPaused`'s `now`), or `null` if
+   *  it was never touched — `amb status`'s read half of the doc promise
+   *  above ("so `status` can honestly report when the flag last changed"). */
+  getPausedChangedAt(): string | null {
+    const row = this.db
+      .prepare<[string], { value: string }>(`SELECT value FROM meta WHERE key = ?`)
+      .get(PAUSED_CHANGED_AT_KEY);
+    return row?.value ?? null;
+  }
+
   getWatermark(mailbox: string, uidValidity: string): number {
     const row = this.db
       .prepare<[string, string], { last_uid: number }>(

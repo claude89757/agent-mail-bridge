@@ -40,6 +40,7 @@ import { assembleDaemon, readCredentialsFile } from '../daemon/assembly.js';
 import type { AssembledDaemon, AssemblyBuilders } from '../daemon/assembly.js';
 import { runDaemonShell } from '../daemon/shell.js';
 import type { ShellDeps, ShellOutcome } from '../daemon/shell.js';
+import { scrubText } from '../domain/replyComposition.js';
 import { buildDefaultSpawnCodex, createCodexDriver } from '../drivers/codexDriver.js';
 import { openDatabase } from '../store/database.js';
 import {
@@ -98,6 +99,15 @@ export async function runStart(args: readonly string[], io: StartIo): Promise<nu
     return 2;
   }
 
+  // Review Minor-1 (batch 12): start's OWN log/err lines obey the same
+  // scrub discipline as every shell line sharing the stderr stream — the
+  // assembly failure message and the rejected-root report both carry
+  // already-expanded real paths (typically under the home dir). Needle:
+  // `io.homedir` — production-wise the very same `os.homedir()` the
+  // assembly's `builders.homedir()` answers.
+  const scrub = (line: string): string =>
+    scrubText(line, { worktreePath: null, homeDir: io.homedir });
+
   const configPath = resolveConfigPath(io.env, io.homedir);
   const loadIo: LoadConfigIo = {
     readFileSync: io.readFileSync,
@@ -119,7 +129,7 @@ export async function runStart(args: readonly string[], io: StartIo): Promise<nu
   try {
     assembled = await io.assemble(config);
   } catch (error) {
-    io.writer.err(`amb start: ${describeError(error)}`);
+    io.writer.err(scrub(`amb start: ${describeError(error)}`));
     return 1;
   }
 
@@ -129,7 +139,7 @@ export async function runStart(args: readonly string[], io: StartIo): Promise<nu
         `dry-run: ${config.dryRun ? 'yes' : 'no'})`,
     );
     for (const rejected of assembled.indexRejected) {
-      io.log(`project root rejected: ${rejected.path} (${rejected.reason})`);
+      io.log(scrub(`project root rejected: ${rejected.path} (${rejected.reason})`));
     }
 
     const outcome = await io.runShell({
