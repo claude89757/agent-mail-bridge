@@ -196,7 +196,7 @@ export async function runOrphanTick(deps: OrphanTickDeps): Promise<OrphanTickRep
 **Files:** Modify `src/transports/types.ts`、`src/transports/imapRead.ts`、
 `tests/helpers/fakeTransport.ts`、`src/store/outboxStore.ts`; Test 并入既有。
 
-- [ ] RED → GREEN → commit。
+- [x] RED → GREEN → commit。
 
 ### Task 2: replySender + stage 联合扩员
 
@@ -204,21 +204,82 @@ export async function runOrphanTick(deps: OrphanTickDeps): Promise<OrphanTickRep
 Modify `src/domain/replyComposition.ts`（stage 加 'EXTRACTION'|'ROUTING'）;
 Test `tests/unit/daemon-reply-sender.test.ts` + replyComposition 加法例。
 
-- [ ] RED → GREEN → commit。
+- [x] RED → GREEN → commit。
 
 ### Task 3: 四 ticks
 
 **Files:** Create `src/daemon/ticks.ts`; Test `tests/unit/daemon-ticks.test.ts`。
 
-- [ ] RED → GREEN → commit。
+- [x] RED → GREEN → commit。
 
 ### Task 4: 批次收尾
 
-- [ ] 四件套全绿；threat-model C3（对账闭环）/C8（stopgap 与 held 语义）
+- [x] 四件套全绿；threat-model C3（对账闭环）/C8（stopgap 与 held 语义）
   证据；architecture 表 daemon ticks 行 + not-started 刷新（只剩 shell/
   IDLE/识别网关/澄清正式流）；完成记录（移交：shell 接线清单、ACK 异步
   语义、QUEUED_WINDOW 复活、E2E 请批模板到点）；
-- [ ] commit + push。
+- [x] commit + push。
+
+---
+
+## 完成记录（2026-07-19）
+
+四任务闭环。测试基线 33 文件 / 688 → **35 文件 / 726**（+38；721 通过 +
+5 live 默认 skip）；四件套全绿；零模型额度、零真实发信。daemon 从此有了
+全部单步：崩溃恢复、过期扫描、邮件主 tick（fetch→ingest→就地派发→已
+脱敏回信）、孤儿恢复、outbox 生命周期与 echo 对账。
+
+### Commit 轨迹
+
+| Commit | 内容 |
+| --- | --- |
+| `bd2ca5b` | 本计划落盘 |
+| `7684003` | T1 seam 补缺（MailTransport.mailboxStatus；OutboxStore.findByCommandId/findByMessageId） |
+| `ae60cbc` | T2 replySender（C3 次序 daemon 侧收口，拒收只对账不重发）+ stage 联合扩 EXTRACTION/ROUTING |
+| `e9a17b1` | T3 四 ticks + dispatch 胶水（echo 对账、两步终态化、stopgap、orphan 五分支） |
+| 本提交 | T4 收尾：threat-model C3/C8、architecture 表、完成记录 |
+
+### 审查结论
+
+**✅ APPROVED，零 Critical/Important，3 Minor 全记移交。** 实现者报
+DONE_WITH_CONCERNS 的两条裁定均获审查独立支持：
+
+1. **registerOutbox 存规范化 messageId**：审查走通四步验证链——echo gate
+   以规范化键查询（ingest.ts:186）；Phase 2 集成测试早在 `49421cf` 就
+   normalize-before-store（在库先例，非本批发明）；存原文会让 echo 对账
+   永远 miss、UNCERTAIN 永无出路——计划草图与计划自己的对账步骤（"echo
+   gate 用的同键"）内部矛盾，实现修复的是计划 bug。全仓无两形态并存。
+2. **UNIQUE 前提纠错**：outbox.message_id 实为 TEXT UNIQUE（计划前提
+   错误）；保留 ORDER BY id LIMIT 1 作 doc'd 防御性定序合理，新增测试
+   钉约束本身（能红性成立）。
+
+变异抽验 6 项：5 杀 1 存活，存活项（胶水内 alreadyTold 双检）与实现者
+自报一致，定性为**防御而非死代码**（共享胶水被 shell/澄清批次直调时
+预检不在场）。M2 的价值注记：echo 对账放宽到 SENDING 在状态机层竟合法
+（SENDING→SENT 是合法边），全靠专测钉住——对账语义不能只依赖状态机。
+
+### 移交清单（→ daemon shell 批次）
+
+1. **SENDING 残留清扫**（审查 Minor-3）：register 后、UNCERTAIN 转移前
+   崩溃会留永久 SENDING 行——echo gate 认得它（不会回灌成命令）但状态
+   永不收敛；shell 启动时清扫（转 UNCERTAIN 交对账，或直接对账）。
+2. **alreadyTold 双检直达测试**（审查 Minor-1 / 变异 M5b 存活）：shell
+   或澄清批次直调 dispatch 胶水时补一个绕过预检的用例。
+3. **集成测试改用真 buildRegisterOutbox**（审查 Minor-2）：
+   ingest-pipeline 测试的 registerOutbox 兜底 `?? receipt.messageId` 与
+   生产 fail-closed 语义分叉（当前不可达但易误导）。
+4. **shell 接线清单**：启动序 = recoverInterruptedIntents → SENDING 清扫
+   → 循环 [runMailTick → runOrphanTick → sweepExpiredClarifications]；
+   `OrphanTickDeps = Omit<MailTickDeps,'metaStore'|'ingestConfig'>` 同一
+   依赖袋；config/creds 装配（env AMB_IMAP_USER/PASS 族，红线 1 只指向
+   专用测试邮箱）；ScrubContext.homeDir = os.homedir() 注入点在 shell。
+5. **ACK 异步语义**：本批同步派发完结果即回，ACK 组装器已备未接——shell
+   若引入"先 ACK 后慢跑"的异步派发再接（配置开关一并设计）。
+6. **QUEUED_WINDOW 复活扫描**：v0.1 默认无时间窗故不可达；配置开放时间
+   窗时需补（commandStore 需 findByStatus + intent 补建路径）。
+7. **E2E 请批（红线 5）**：shell 落地后全链路真跑的预估模板在批次六
+   完成记录（1–2 微任务 + 1 resume，<500k input 多缓存 / <5k output）；
+   届时附任务文本与次数上限报用户确认。
 
 ---
 

@@ -100,7 +100,20 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   round-tripped live through Gmail: 1 production-path self-send came back
   with the minted `Message-ID` byte-identical and `x-amb-outbox-id` first
   instance equal to the registered outbox id
-  (`tests/live/smtp-send-live.test.ts`, 1/1 in 12 s, 2026-07-19).
+  (`tests/live/smtp-send-live.test.ts`, 1/1 in 12 s, 2026-07-19). The
+  daemon side now closes the send-state loop (`src/daemon/replySender.ts`,
+  `src/daemon/ticks.ts`): a resolved send transitions the outbox row
+  SENDING→SENT; a rejected send transitions it to UNCERTAIN and is NEVER
+  retried automatically (a mutation injecting a second `transport.send`
+  is killed by a dedicated test — "isolate and reconcile, never blind
+  resend", effectively-once); the ONLY path out of UNCERTAIN is
+  reconciliation against the bridge's own echo arriving back (normalized
+  `Message-ID` match — stored normalized precisely so the echo gate's key
+  and the reconciliation key are the same key), and a mutation relaxing
+  reconciliation to non-UNCERTAIN rows is likewise test-killed. Crash
+  windows that strand a SENDING row are recognized by the echo gate
+  (no command re-entry) but never converge — the startup sweep for them
+  is an explicit daemon-shell handoff item.
 - **C4 — Time fence.** `INTERNALDATE` ≥ persisted `readyAt` from first setup:
   a fresh install can never execute historical mail.
   *Evidence:* `BEFORE_READY` rejection + fail-closed `NO_READY_AT` when unset
@@ -196,12 +209,17 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   CLARIFY verdict short-circuits with ZERO side effects — the intent row
   stays PENDING untouched and spies pin that no session row, worktree, or
   driver call happens — and clarification-beats-dry-run is
-  mutation-verified (execution is the only thing dry-run can skip). Still
-  pending: reply parsing + mail format (blocked on the real-device
-  walkthrough, spec line 213), clarification record creation + token
-  minting and the quarantine ACTION on a rejected verdict (they ship with
-  the clarification-mail batch, since the token must ride the outbox
-  transaction), and the EXPIRED trigger timing (daemon batch).
+  mutation-verified (execution is the only thing dry-run can skip). The
+  daemon ticks add the EXPIRED trigger (`sweepExpiredClarifications`,
+  sharing the exact `<=` boundary with the reply-time rejection so sweep
+  and reject can never disagree about the same instant) and a
+  pre-walkthrough stopgap for unroutable commands: ONE "cannot route"
+  reply (candidate names only, never paths, scrubbed), deduplicated
+  through the outbox row itself, with the intent deliberately HELD at
+  PENDING — no guessing, no retry storm, upgraded to the real
+  clarification flow (token + record riding the outbox transaction +
+  reply parsing) once the real-device walkthrough locks the mail format
+  (spec line 213).
 - **C9 — Outbound hygiene.** Replies go to self only (CC/BCC/attachments
   mechanically impossible), size-capped, with secrets, absolute paths, and
   large diffs redacted.
