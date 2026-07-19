@@ -127,7 +127,18 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   lowercase-UUID whitelist before it may enter the argv (no shell anywhere,
   prompt is a single argv element), and `dryRun` reaching the driver throws
   without spawning (`src/drivers/codexDriver.ts`,
-  `tests/unit/codex-driver.test.ts`). Real-task E2E remains user-gated
+  `tests/unit/codex-driver.test.ts`). The dispatch use case
+  (`src/application/dispatch.ts`) now pins the consumption side: the driver
+  only ever receives a cwd that came out of `createTaskWorktree` (C7's
+  output) or a persisted `worktree_path` whose directory must still exist
+  (resume fails closed on a missing tree rather than picking a new one),
+  dry-run intents are short-circuited to `SKIPPED_DRY_RUN` before any
+  worktree or driver call (the driver's own dryRun throw stays an
+  unreachable second line), and a driver stream that ends without its
+  contractual terminal event throws fail-closed — a mutation replacing
+  that throw with a fabricated terminal outcome is killed by a dedicated
+  test, so execution results can not be silently invented
+  (`tests/unit/dispatch.test.ts`). Real-task E2E remains user-gated
   (red line 5).
 - **C7 — Worktree isolation.** Writes happen only in bridge-owned worktrees
   created from an explicit base commit under a controlled root; the user's
@@ -180,11 +191,17 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   consults persists with a first-write invariant on the driver session id
   (`src/store/sessionStore.ts`, migration 004: a recorded id is never
   silently replaced; a different id is an anomaly and throws, per
-  ADR-0004's measured stable-thread_id semantics). Still pending: reply
-  parsing + mail format (blocked on the real-device walkthrough, spec
-  line 213), the quarantine ACTION on a rejected verdict and the wiring
-  of lookup → verdict → dispatch (next batch), and the EXPIRED trigger
-  timing (daemon batch).
+  ADR-0004's measured stable-thread_id semantics). The lookup → verdict →
+  execution wiring is now in place (`src/application/dispatch.ts`): a
+  CLARIFY verdict short-circuits with ZERO side effects — the intent row
+  stays PENDING untouched and spies pin that no session row, worktree, or
+  driver call happens — and clarification-beats-dry-run is
+  mutation-verified (execution is the only thing dry-run can skip). Still
+  pending: reply parsing + mail format (blocked on the real-device
+  walkthrough, spec line 213), clarification record creation + token
+  minting and the quarantine ACTION on a rejected verdict (they ship with
+  the clarification-mail batch, since the token must ride the outbox
+  transaction), and the EXPIRED trigger timing (daemon batch).
 - **C9 — Outbound hygiene.** Replies go to self only (CC/BCC/attachments
   mechanically impossible), size-capped, with secrets, absolute paths, and
   large diffs redacted.

@@ -182,24 +182,71 @@ directoryExists，调用日志断言次序）：
 Test 并入 `tests/unit/store-database.test.ts`、`tests/unit/store-records.test.ts`
 （tip 断言涉及 `tests/unit/cli-doctor.test.ts` 时机械跟进）。
 
-- [ ] 失败测试先行（D-P4B8-4 store 侧全部）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] 失败测试先行（D-P4B8-4 store 侧全部）。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 2: dispatchIntent 编排
 
 **Files:** Create `src/application/dispatch.ts`; Test `tests/unit/dispatch.test.ts`。
 
-- [ ] 失败测试先行（D-P4B8-4 dispatch 侧全部）。
-- [ ] RED → 实现 → GREEN → commit。
+- [x] 失败测试先行（D-P4B8-4 dispatch 侧全部）。
+- [x] RED → 实现 → GREEN → commit。
 
 ### Task 3: 批次收尾
 
-- [ ] 四件套全绿；threat-model C6/C8 证据句接上 dispatch 编排（执行标记
+- [x] 四件套全绿；threat-model C6/C8 证据句接上 dispatch 编排（执行标记
   次序、澄清零副作用短路、session 承诺标记语义）；architecture 表新增
   dispatch 行并刷新 not-started 行；完成记录（移交说明：回信组装接
   outcome.events 必须过 C9 scrub、澄清记录创建归澄清批次、RUNNING 残留
   与 partial-session 恢复归 daemon、E2E 请批模板沿批次六）；
-- [ ] commit + push。
+- [x] commit + push。
+
+---
+
+## 完成记录（2026-07-19）
+
+三任务 + 一轮审查修复闭环。测试基线 30 文件 / 576 → **31 文件 / 605**
+（+29：T1 store 侧 7、T2 dispatch 20、审查修复 +2；601 通过 + 4 live 默认
+skip）；四件套全绿；全程零模型额度、零发信。
+
+### Commit 轨迹
+
+| Commit | 内容 |
+| --- | --- |
+| `97737bd` | 本计划落盘 |
+| `3eeb9b9` | T1 migration 005 + `recordWorktreePath`（首写不变量同款；既有行加列 NULL；tip 断言 4→5 机械跟进） |
+| `3a86d2c` | T2 `dispatchIntent` 编排（九步 normative 次序全部调用日志钉住；20 测试） |
+| `2fba982` | 审查修复：无终态 fail-closed 抛错的击杀测试（封掉唯一存活变异体 S8）+ 流中途 reject 的 identity 传播钉 + NO_MATCH 对称断言 |
+| 本提交 | T3 收尾：threat-model C6/C8、architecture 表、完成记录 |
+
+### 审查结论
+
+初审 **NEEDS_FIXES（1 Important + 3 Minor）**，修复后复核 **APPROVED**。
+审查员六组变异抽验（D 次序 / F term-null / J reason / K 漏记录 / E 澄清压
+dry-run / A 幂等 no-op）全部精确击杀、宣称属实；唯一存活变异体 S8（把
+"流无终态 ⇒ 抛错"换成伪造 failed 终态，20/20 仍绿）在修复轮被新测试
+精确击杀（1 failed | 21 passed，复核副本重放确认），复核还对 M-2 加做
+包裹变异（try/catch 重抛）证明 identity 断言有真实牙齿。taskId 长度边界
+经论证无需防御（rowid ≤19 位 ⇒ taskId ≤31 字符 < 64 上限）。
+
+### 移交说明
+
+1. **【不可选，再次强调】回信组装批次的 C9 scrub 义务**：`DispatchOutcome
+   .executed.events` 携带的 agent-message/tool-activity 文本按设计含真实
+   worktree 路径；intent `status_reason` 同理（本地 DB 运行态可含路径，
+   红线 2 管 git/日志/邮件）。任何事件文本进邮件正文前必须 scrub + 测试
+   （threat-model C9、批次六移交说明 #1）。
+2. **澄清记录创建 + token 铸造归澄清邮件批次**：token 要进邮件，记录创建
+   必须与 outbox 事务同批设计；token 生成器必须断言非空（批次四移交 #4，
+   `'' === ''` 会匹配）。CLARIFY_NO_MATCH 的"列全部项目"候选组装同归该批。
+3. **归 daemon 批次**：PENDING intent 的喂入循环（`findByStatus('PENDING')`
+   逐个 dispatch）；RUNNING 残留的 INTERRUPTED_BY_RESTART 恢复；
+   partial-session 异常行（driverSessionId/worktreePath 为 NULL 或树缺失）
+   的恢复策略——dispatch 一律 fail closed 不自动重建；审查 M-1：多终态/
+   终态后有事件的畸形流当前被静默容忍（取末终态），daemon 做缓冲上限时
+   一并裁定；worktreesRoot 配置变更导致的持久化路径漂移处理。
+4. **E2E 请批模板沿批次六**（红线 5）：dispatch 管线 + CodexDriver 的真跑
+   现在只差 daemon 喂入；到 daemon 批次收尾时一并向用户报预估请批。
 
 ---
 
