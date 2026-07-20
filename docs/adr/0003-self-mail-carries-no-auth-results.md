@@ -1,6 +1,7 @@
 # ADR-0003: Self-submitted mail carries no Authentication-Results — identity-gate polarity must invert
 
-- Status: **proposed — awaiting user decision (red line 6)**
+- Status: **accepted (user, 2026-07-20)** — polarity inversion approved; the
+  identity-gate wiring batch is unblocked. Implementation note below.
 - Deciders: bridge maintainers + user (design change against a spec assumption)
 - Related: spec §3 identity gate ("DKIM/SPF + From==To==self"), §5 P0-3;
   threat-model C2; `src/domain/authResults.ts` (`parseAuthenticationResults`,
@@ -79,6 +80,24 @@ show Gmail always stamps its own AR there.
    sample already grounds the mechanism.
 3. Real-device walkthrough (spec line 213) naturally re-verifies the
    phone-app path produces the no-AR shape end-to-end.
+
+## Accepted decision + implementation note (2026-07-20)
+
+The user accepted the polarity inversion. The wiring batch implements the
+reject trigger as **AR presence** — if the mail carries any
+`Authentication-Results` header at all, it traversed an MTA authentication
+pipeline, so it cannot be a legitimate internal self-submission and is
+quarantined (`AUTH_RESULTS_PRESENT`); a mail with no such header passes this
+factor. This is **strictly more conservative** than the "pinned authserv-id
+filter" this ADR's prose sketched: presence-only cannot fail open on a
+Gmail authserv-id string change, and — because inversion means "more AR ⇒
+more likely rejected" — an attacker-injected extra AR only helps the reject,
+never defeats it. `parseAuthenticationResults` is still used on the reject
+branch to extract the topmost `authservId` as reject **evidence** (which MTA
+stamped it), not as an accept/ignore filter. If a future non-self-mail path
+needs to accept some AR-bearing mail, that reintroduces the authserv-id
+trust question under a new ADR; `checkDkimFactor`'s pass-requiring form
+remains in the codebase for it.
 
 ## Consequences
 
