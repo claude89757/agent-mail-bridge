@@ -1,6 +1,7 @@
 # agent-mail-bridge
 
 [![CI](https://github.com/claude89757/agent-mail-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/claude89757/agent-mail-bridge/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/agent-mail-bridge)](https://www.npmjs.com/package/agent-mail-bridge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Email is the universal, firewall-friendly async transport for AI agents.**
@@ -13,7 +14,8 @@ your mail provider is the only intermediary.
 
 ## Status
 
-**Pre-release: v0.1.0 in preparation.** What exists today, stated honestly:
+**v0.1.0 is released — [on npm](https://www.npmjs.com/package/agent-mail-bridge).**
+What exists today, stated honestly:
 
 - **Built and tested** — the full core pipeline (IMAP ingest → deterministic
   routing → codex dispatch in a bridge-owned worktree → redacted reply →
@@ -64,26 +66,35 @@ only.
 **Intended use**: your own mailbox, your own device, your own projects. Not
 for circumventing employer policy; don't bind a managed corporate mailbox.
 
-## Quickstart (from source)
+## Quickstart
 
-The npm package is not published yet, so building from source is the only
-install path today. Requirements: Node.js ≥ 22, [pnpm](https://pnpm.io), a
-Gmail account (v0.1 pins Gmail's IMAP/SMTP endpoints), the OpenAI Codex CLI
-(`codex`) on your `PATH`, and macOS or Linux if you want `amb install`
-(launchd / systemd user units).
+Requirements: Node.js ≥ 22, a Gmail account (v0.1 pins Gmail's IMAP/SMTP
+endpoints), the OpenAI Codex CLI (`codex`) on your `PATH`, and macOS or Linux
+if you want `amb install` (launchd / systemd user units).
 
-### 1. Clone and build
+### 1. Install
+
+```sh
+npm install -g agent-mail-bridge
+```
+
+This puts the `amb` command on your `PATH`. Commands below are written as
+`amb <command>`.
+
+<details>
+<summary>Or build from source</summary>
 
 ```sh
 git clone https://github.com/claude89757/agent-mail-bridge.git
 cd agent-mail-bridge
-pnpm install
+pnpm install   # pnpm: https://pnpm.io
 pnpm build
 ```
 
-Commands below are written as `amb <command>` — the name the published npm
-package will install. From a source checkout, run
-`node dist/cli/main.js <command>` from the repository root instead.
+From a source checkout, run `node dist/cli/main.js <command>` from the
+repository root instead of `amb <command>`.
+
+</details>
 
 ### 2. Create the credentials file
 
