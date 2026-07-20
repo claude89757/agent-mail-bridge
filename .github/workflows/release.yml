@@ -1,9 +1,10 @@
 name: Release
 
-# Publish-on-tag. Pushing a v* tag builds, gates, publishes to npm (with
-# provenance) and cuts a GitHub Release. Credentials never pass through a person
-# or an agent interactively: the publish reads the repo secret NPM_TOKEN, the
-# Release uses the built-in GITHUB_TOKEN. See docs/releasing.md and ADR-0005.
+# Publish-on-tag. Pushing a v* tag builds, gates, publishes to npm and cuts a
+# GitHub Release. No long-lived credentials: npm publish authenticates via OIDC
+# trusted publishing (configured on npmjs.com for this repo + this workflow) and
+# provenance is automatic; the Release uses the built-in GITHUB_TOKEN. See
+# docs/releasing.md and ADR-0005.
 on:
   push:
     tags:
@@ -11,7 +12,7 @@ on:
 
 permissions:
   contents: write # create the GitHub Release
-  id-token: write # OIDC for npm provenance
+  id-token: write # OIDC for npm trusted publishing (auth + provenance)
 
 jobs:
   release:
@@ -47,10 +48,15 @@ jobs:
       - run: pnpm build
       - run: pnpm test
 
-      - name: Publish to npm (with provenance)
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # OIDC trusted publishing needs npm >= 11.5.1; the runner's bundled npm is
+      # older. No token: npm authenticates via the GitHub Actions OIDC identity
+      # (id-token: write) against the trusted publisher configured on npmjs.com,
+      # and generates provenance automatically.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Publish to npm (OIDC trusted publishing)
+        run: npm publish --access public
 
       - name: Create GitHub Release
         env:

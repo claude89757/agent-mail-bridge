@@ -22,7 +22,7 @@
    （同类动作确认一次后无需重复确认）；
 4. **发布凭据绝不经 agent**：npm publish / GitHub Release 走 CI 自动化——推
    `v*` tag 触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)，
-   凭仓库 secret `NPM_TOKEN` 与内置 `GITHUB_TOKEN` 完成；agent 编写维护流水线、
+   publish 凭 OIDC 可信发布（trusted publishing）鉴权、不存任何 npm token，Release 用内置 `GITHUB_TOKEN`；agent 编写维护流水线、
    打 release tag 触发它，但**绝不经手 npm token / GitHub 密码等任何登录凭据**
    （Anthropic 层硬约束，本文件无权放宽）。推 release tag（触发真实发布）每次先
    向用户确认一次；改仓库设置等操作 agent 不擅自执行，逐次经用户确认（如经
@@ -65,8 +65,9 @@
 
 - P0-3 需用户从另一邮箱发送伪造对照邮件；
 - Phase 3 起需用户手机真机走查；
-- 首次发布前，用户一次性在 GitHub 仓库添加 `NPM_TOKEN` secret（Settings →
-  Secrets and variables → Actions）；此后每次发布由 agent 打 `v*` tag 触发 CI
+- 发布经 OIDC 可信发布：用户一次性在 npmjs.com 该包设置里配 Trusted Publisher
+  （GitHub Actions；org `claude89757` / repo `agent-mail-bridge` / workflow
+  `release.yml`），此后不存任何 npm token；每次发布由 agent 打 `v*` tag 触发 CI
   自动完成 publish + Release（agent 打 tag 前确认一次）。见
   [`docs/releasing.md`](docs/releasing.md)。
 

@@ -83,3 +83,20 @@ Scope kept out of this decision:
 - The first real exercise is the `v0.1.0` tag push, gated on: (a) the maintainer
   having added `NPM_TOKEN`, and (b) the agent's per-release confirmation. Until
   then the pipeline is dormant.
+
+## Update (2026-07-20): migrated to OIDC trusted publishing
+
+`v0.1.0` shipped via the token path above (a one-time classic **Automation**
+token in `NPM_TOKEN`; the first attempt used a token without 2FA-bypass and npm
+returned `403`, resolved by switching to an Automation token). Immediately after,
+the release path was migrated to **OIDC trusted publishing**, which *strengthens*
+this ADR's core rather than reversing it: there is now no long-lived npm token
+anywhere. GitHub Actions authenticates to npm per-run with a short-lived OIDC
+identity tied to the trusted publisher configured on npmjs.com (this repo +
+`release.yml`); provenance is automatic. `release.yml` dropped `NODE_AUTH_TOKEN`
+and `--provenance` and upgrades npm to ≥ 11.5.1 (`id-token: write`, already
+present, is what OIDC uses). Once the maintainer confirms the trusted publisher
+is saved, the `NPM_TOKEN` secret and the one-time token are deleted/revoked —
+after which the repo holds no npm credential at all. The
+agent-never-handles-credentials rule is unchanged and, with no token to hold,
+easier to keep.
