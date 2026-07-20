@@ -6,11 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-07-20
 
-First public release. See the README's Status section for what is
-live-verified versus not yet wired (the identity gate's DKIM factor, the
-clarification mail flow, a full end-to-end run).
+First public release. The full pipeline — IMAP ingest → deterministic
+routing → codex dispatch in a bridge-owned worktree → redacted reply — is
+built, tested, and validated end to end against a live mailbox (a real
+self-mail drove a real codex task and the scrubbed result mailed itself
+back, twice, in under a minute each). The one interactive feature still
+pending is the clarification mail flow (replying `1`/`2`/`new` to an
+ambiguous command); see the README's Status section.
 
 ### Added
 
@@ -52,6 +56,10 @@ clarification mail flow, a full end-to-end run).
   attachments, ever.
 - Ingest identity gate (self-address check, own-echo detection, `readyAt`
   fence): invalid mail is dropped with zero agent/model calls.
+- Self-submission authentication factor (ADR-0003): a `From==To==self` mail
+  carrying any `Authentication-Results` header reached INBOX via an external
+  MX and is quarantined `AUTH_RESULTS_PRESENT` — legitimate authenticated
+  self-mail carries none. Confirmed live by the end-to-end run.
 - Credentials live only in an operator-named env file whose permissions are
   enforced at exactly 0600 (file) / 0700 (directory) by stat-only checks;
   credential values never appear in config, logs, terminal output or mail.
