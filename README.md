@@ -73,8 +73,9 @@ allowlist a repo, start the daemon, then email yourself a task — targeting a
 first result mail in under ten minutes.
 
 Requirements: Node.js ≥ 22, a Gmail account (v0.1 pins Gmail's IMAP/SMTP
-endpoints), the OpenAI Codex CLI (`codex`) on your `PATH`, and macOS or Linux
-if you want `amb install` (launchd / systemd user units).
+endpoints), the [OpenAI Codex CLI](https://github.com/openai/codex)
+(`npm install -g @openai/codex`) on your `PATH`, and macOS or Linux if you want
+`amb install` (launchd / systemd user units).
 
 ### 1. Install
 
