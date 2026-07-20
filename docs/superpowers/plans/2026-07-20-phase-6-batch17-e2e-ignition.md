@@ -116,4 +116,4 @@ the `readyAt` fence) needed no code change per the reviewer.
 - [x] Memory updated ([[adr3-accepted-e2e-approved]])
 - [x] Read-only review APPROVED; I-1/M-1/M-2 folded in; four-gate green again
       (typecheck/lint/build/test) after the fixes
-- [ ] Committed + CI green (this commit)
+- [x] Committed (`e5aca79`) + CI green (success)
