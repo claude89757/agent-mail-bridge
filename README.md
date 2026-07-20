@@ -68,6 +68,10 @@ for circumventing employer policy; don't bind a managed corporate mailbox.
 
 ## Quickstart
 
+Six steps — install, save your mail credentials to a file, run `setup`,
+allowlist a repo, start the daemon, then email yourself a task — targeting a
+first result mail in under ten minutes.
+
 Requirements: Node.js ≥ 22, a Gmail account (v0.1 pins Gmail's IMAP/SMTP
 endpoints), the OpenAI Codex CLI (`codex`) on your `PATH`, and macOS or Linux
 if you want `amb install` (launchd / systemd user units).
@@ -100,8 +104,9 @@ repository root instead of `amb <command>`.
 
 The bridge reads mail credentials from a small env-format file whose path you
 pass to setup. Use a Gmail
-[app password](https://support.google.com/accounts/answer/185833) (requires
-2-Step Verification) — never your account password.
+[app password](https://support.google.com/accounts/answer/185833) — never your
+account password. Create one at Google Account → Security → 2-Step Verification
+(must be enabled) → App passwords.
 
 ```sh
 mkdir -p ~/.secrets && chmod 700 ~/.secrets
@@ -125,7 +130,7 @@ read at daemon startup, never during checks, and never stored anywhere else.
 ### 3. Run setup
 
 ```sh
-node dist/cli/main.js setup \
+amb setup \
   --self bridge-user@example.com \
   --credentials-env-file ~/.secrets/amb.env
 ```
@@ -136,11 +141,15 @@ received before that instant will never be executed.
 
 ### 4. Allowlist your projects
 
-Edit the config file (see [Configuration](#configuration)) and add the
-directories the bridge may work in, for example:
+Open `~/.config/agent-mail-bridge/config.json` (the file `setup` just wrote; see
+[Configuration](#configuration) for every field) and list the directories the
+bridge may work in — optionally with short aliases you can type in a subject:
 
 ```json
-"projects": { "roots": ["~/github"] }
+"projects": {
+  "roots": ["~/github"],
+  "aliases": { "blog": "~/github/my-blog" }
+}
 ```
 
 The allowlist starts empty, and no mail command can match a project until you
@@ -159,10 +168,27 @@ amb install          # write the launchd/systemd user service file
 and prints the `launchctl` / `systemctl` activation command for you to run
 yourself.
 
-Then email yourself from any device: the v0.1 command format is minimal —
-the subject's first token names the project (directory name or configured
-alias), the body is the task prompt. The result comes back as a reply in the
-same thread; replying to that thread continues the same codex session.
+### 6. Send yourself a task
+
+With the daemon running, email **your own address** (the `--self` address) from
+any device. The rule is minimal: **the subject's first word picks the project**
+(a directory name under an allowlisted root, or an alias), and **the email body
+is the task**. Using the `blog` alias from step 4:
+
+```text
+To:       bridge-user@example.com
+Subject:  blog
+Body:     Fix the broken "Contact" link in the footer — it 404s. Keep the styling.
+```
+
+Within one poll interval the daemon picks it up, runs Codex against that repo in
+an isolated bridge-owned worktree (your own checkout is never touched), and
+**replies in the same thread** with the result — redacted, no local paths or
+secrets. Two things to know:
+
+- **Follow up** by replying in that thread: it resumes the *same* Codex session,
+  so earlier context carries over.
+- **Start a new task** with a fresh email whose subject names a project.
 
 ## Command reference
 
