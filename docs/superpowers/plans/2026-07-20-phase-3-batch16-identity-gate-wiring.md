@@ -152,7 +152,7 @@ if (!authFactor.ok) {
 **Files:** Modify `src/domain/authResults.ts`、
 `tests/unit/domain-auth-results.test.ts`。
 
-- [ ] RED → GREEN → mutation 自证 → commit。
+- [x] RED → GREEN → mutation 自证 → commit。
 
 ### Task 2: ingest 门链接线 + 集成测试
 
@@ -160,13 +160,13 @@ if (!authFactor.ok) {
 `tests/integration/ingest-pipeline.test.ts`（+ `tests/unit/ingest.test.ts`
 如现有门测试在此）。
 
-- [ ] RED → GREEN → mutation 自证 → commit。
+- [x] RED → GREEN → mutation 自证 → commit。
 
 ### Task 3: 批次收尾（编排者）
 
-- [ ] 四件套全绿；threat-model C2 / architecture / README 三处状态同步；
+- [x] 四件套全绿；threat-model C2 / architecture / README 三处状态同步；
   完成记录 + 移交；
-- [ ] commit + push。
+- [x] commit + push。
 
 ---
 
@@ -185,3 +185,66 @@ if (!authFactor.ok) {
   论证是否成立（尤其"echo 先于 AUTH 会不会给攻击者可乘之机"——echo 需
   匹配已记录 outboxId，攻击者无法伪造；AUTH 隔离所有带 AR 邮件）。
 - 无占位符：函数签名、门链位置、测试点、mutation 自证已具体。
+
+---
+
+## 完成记录（2026-07-20，批次十六收尾）
+
+### 提交清单
+
+| commit | 内容 |
+| --- | --- |
+| `3ca18ee` | ADR-0003 → accepted（含 presence-only 实现 note）+ 本 plan 落盘 |
+| `e2e0b0c` | T1：`checkSelfSubmissionAuthFactor` 纯函数（presence-only，authservId 作 evidence）+ 8 单测；843→850 |
+| `cc210d4` | T2：ingest 门链接线（C1→AUTH→window，doc 钉三条顺序理由）+ 集成 MVP「伪造 From 0 intent」+ 顺序 pin；850→859 |
+| 本提交 | T3 收尾：threat-model C2 + :317 开放问题表、architecture mermaid 节点 + 状态表拆 done 行、README Status/Highlights/built 三处，全部 pending/blocked→wired；本记录 |
+
+测试 843 → **859**（+16），四件套全绿，全程零真实运行零发信零 codex 额度。
+
+### 审查故事（安全关键，钉 3ca18ee..cc210d4）
+
+- **STATUS: APPROVED，零 Important**。审查者按本批安全等级做了三层核验：
+  - **A 最终字节正确性**（因实现者报告过一次复原误操作）：独立逐行读
+    committed `checkSelfSubmissionAuthFactor` 与 ingest 接线，确认 GREEN
+    函数完整、无残留死代码/半改/极性反转，`e2e0b0c` 纯加法、
+    `checkDkimFactor` 与 parser 字节未动。
+  - **B presence-only fail-closed 挑战**：三根渗透探针全部被现有测试挡住
+    ——P1（presence 改判 parse 后 `dkim.length`）在 `['']`/畸形头 fail-open
+    但被 2 测抓；P2（AUTH 移到 echo 前）撞 echo/C1/readyAt 顺序 pin 3 红；
+    P3（重新引入 `dkim=pass ⇒ accept` verdict-trust，即 ADR 警告的 fail-open）
+    被 5 个 dkim=pass 夹具测试抓。构造不出「带 AR 却放行」的邮件。
+  - **C mutation 重放**：4 条实现者宣称 + 3 条自选探针全部精确重放。
+- 唯一 follow-up 即本 T3 文档同步（审查范围钉在两个实现 commit，文档同步
+  本就 plan 划归 Task 3），已在本提交落地。
+
+### 过程透明（实现者自报 + 审查独立核验）
+
+T1 首次 mutation 复原一度误用「实现前」备份把 GREEN 函数抹掉，实现者经
+`grep -c`（0 命中）当场发现、按对话原文重贴，并改用「实现后」`*.green.ts.bak`
+备份供后续复原。审查 A 项独立读最终代码确认字节正确无净损失——这正是
+「实现者自证 + 审查独立验证」双层防线起作用的实例：**mutation 复原只用
+post-GREEN 备份 + diff 字节比对**这条纪律的价值再次被验证。
+
+### spec / MVP 兑现
+
+- MVP 验收「伪造 From、外部发件人、多收件人、系统回信：0 触发（DKIM +
+  echo gate）」的 **DKIM 半边**落地：集成测试断言「From==To==self + AR 头
+  → rejected `AUTH_RESULTS_PRESENT` + `intent count === 0`」端到端。
+- 门链序 `echo → readyAt → C1 → AUTH → window` 是安全属性，有 doc + 顺序
+  pin 测试双护。
+
+### 移交清单
+
+1. 真实伪造 From 对照件（方案 B）：用户未批、非阻塞（8/8 外部样本已佐证
+   机制）；若未来要经验性钉死攻击侧形态再请批；
+2. `authservId` evidence v0.1 不落库；未来取证定位需要时再评估落库；
+3. E2E 真跑（红线 5，已批准）：下一步，含识别网关的完整链路。
+
+### 经验沉淀
+
+- **安全关键批的审查要「信任但独立验证」**：实现者报告复原误操作后，审查
+  不满足于「实现者说已验证」，而是独立逐行读最终代码 + 重放全部 mutation
+  ——这一层在本批直接确认了字节正确性，是安全批不可省的一环。
+- **fail-closed 收紧优于忠实照抄**：ADR 原文勾了 pinned-authservId 过滤，
+  实现选了更严的 presence-only 并在 ADR accepted note 记录理由；审查用 P1/P3
+  探针反向确认「更严」不是空话（松回 verdict-trust 会 fail-open 且被测试抓）。

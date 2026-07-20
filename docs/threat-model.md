@@ -81,11 +81,30 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   closed). **P0-3 measured (2026-07-19): legitimate self-submitted mail
   carries NO `Authentication-Results` at all** (SMTP and web/app paths
   short-circuit past MX), while every MX-ingested external sample carries
-  them — so the wiring must INVERT the factor's polarity for
-  `From==To==self` mail (AR present ⇒ external ⇒ quarantine). Design change
-  vs the spec assumption ⇒ blocked on the user accepting
-  [ADR-0003](adr/0003-self-mail-carries-no-auth-results.md) (red line 6);
-  the `authservId` trust policy applies to the AR-present reject branch.
+  them. [ADR-0003](adr/0003-self-mail-carries-no-auth-results.md) was
+  **accepted (2026-07-20)** and the factor is now **wired into ingest**
+  (`checkSelfSubmissionAuthFactor`, `src/application/ingest.ts` between the
+  C1 and time-window gates): the polarity is inverted for `From==To==self`
+  mail — **AR present ⇒ external MX origin ⇒ quarantine `AUTH_RESULTS_PRESENT`;
+  none present ⇒ authenticated internal self-submission passes**. The reject
+  trigger is AR *presence* (raw header existence), strictly more conservative
+  than a `dkim=pass` verdict check or an authserv-id allowlist — it cannot
+  fail open on a Gmail authserv-id string change, and because inversion means
+  "more AR ⇒ more likely rejected" an attacker-injected extra AR only helps
+  the reject. The topmost `authservId` is extracted as reject **evidence**
+  only, never an accept filter; `checkDkimFactor`'s pass-requiring form stays
+  in the codebase for any future non-self-mail path. *Evidence:* the MVP
+  "forged From ⇒ 0 trigger" DKIM half is a synthetic-fixture integration test
+  asserting outcome `rejected` + reason `AUTH_RESULTS_PRESENT` + `intent
+  count === 0` (`tests/integration/ingest-pipeline.test.ts`); the gate order
+  `echo → readyAt → C1 → AUTH → window` is pinned (echo-before-AUTH so the
+  bridge's own replies are never quarantined, C1-before-AUTH so non-self mail
+  leaks no AR verdict, AUTH-before-window so forged mail terminates `rejected`
+  not parked `QUEUED_WINDOW`); security review APPROVED after challenging the
+  fail-closed posture with 3 penetration probes (parsed-length presence,
+  verdict-trust reintroduction, echo-order swap — each caught by existing
+  tests) and replaying 4+3 mutations. Real forged-From controls (方案 B) stay
+  a user gate; the 8/8 external MX sample already grounds the mechanism.
 - **C3 — Echo gate.** Bridge-sent mail carries an own `Message-ID` and
   `X-AMB-Outbox-ID`; both are recorded before send, so inbound copies are
   classified `SYSTEM_ECHO` and never routed.
@@ -314,7 +333,7 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
 
 | Item | Where decided | Status |
 | --- | --- | --- |
-| Self-to-self Gmail `Authentication-Results` shape | [ADR-0003](adr/0003-self-mail-carries-no-auth-results.md) | **measured — there are none on legitimate self-mail**; polarity-inverted gate proposed, awaiting the user's decision (red line 6) |
+| Self-to-self Gmail `Authentication-Results` shape | [ADR-0003](adr/0003-self-mail-carries-no-auth-results.md) | **measured — there are none on legitimate self-mail**; polarity-inverted gate **accepted (2026-07-20) and wired** into ingest (presence-only reject) |
 | IMAP IDLE reconnect / UIDVALIDITY behavior in practice | [ADR-0002](adr/0002-p0-1-gmail-imap-smtp-go.md) | **complete — Go** (read + send halves measured; self-send visibility ~15–30 s) |
 | `codex exec --json` session id extraction and resume semantics | [ADR-0004](adr/0004-p0-2-codex-exec-session-semantics.md) | **complete — Go** (`thread.started.thread_id`, resume retains context with a stable id, bogus id fails loud; P0-4 reserve not pursued) |
 | Linux credential storage (libsecret vs encrypted file, 0600) | implementation-phase ADR | open; CLI meanwhile enforces 0600/0700 on the env file (C10) |

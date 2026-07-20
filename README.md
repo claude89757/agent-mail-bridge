@@ -17,19 +17,18 @@ your mail provider is the only intermediary.
 
 - **Built and tested** — the full core pipeline (IMAP ingest → deterministic
   routing → codex dispatch in a bridge-owned worktree → redacted reply →
-  daemon poll loop), with crash recovery, idempotent ingest and a
-  transactional outbox; 800+ tests, every external seam (IMAP, SMTP, codex,
+  daemon poll loop), including the self-mail identity gate (ADR-0003
+  polarity inversion) and crash recovery, idempotent ingest and a
+  transactional outbox; 850+ tests, every external seam (IMAP, SMTP, codex,
   git, filesystem, clock) faked in tests.
 - **Live-verified** — the IMAP read path (read-only, against a dedicated
   test mailbox) and the SMTP send round-trip (a production-path self-send
   whose `Message-ID` and echo markers were read back over IMAP).
-- **Not yet** — the DKIM (`Authentication-Results`) factor of the identity
-  gate is implemented but not wired into ingest
-  ([ADR-0003](docs/adr/0003-self-mail-carries-no-auth-results.md) pending);
-  the clarification mail flow waits on a real-device walkthrough; and no
-  full end-to-end run (a real mail driving a real codex task) has been
-  performed. "From README to the first result mail in ≤ 10 minutes" is the
-  v0.1.0 acceptance target, not a demonstrated number.
+- **Not yet** — the clarification mail flow (replying `1`/`2`/`new` to an
+  ambiguous command) waits on a real-device walkthrough; and no full
+  end-to-end run (a real mail driving a real codex task) has been performed
+  yet. "From README to the first result mail in ≤ 10 minutes" is the v0.1.0
+  acceptance target, not a demonstrated number.
 
 Roadmap and design decisions:
 [docs/superpowers/specs/2026-07-17-agent-mail-bridge-roadmap-design.md](docs/superpowers/specs/2026-07-17-agent-mail-bridge-roadmap-design.md)
@@ -49,11 +48,13 @@ Security and privacy documents are headline features, not appendices:
 [threat model](docs/threat-model.md) · [security](docs/security.md) ·
 [privacy](docs/privacy.md).
 
-Highlights: self-mail-only identity gate (the DKIM factor is built and
-awaits wiring — [ADR-0003](docs/adr/0003-self-mail-carries-no-auth-results.md)),
-zero model calls for invalid mail, bridge-owned worktree isolation (your
-working tree is never touched), `workspace-write` sandbox ceiling, redacted
-replies to yourself only.
+Highlights: self-mail-only identity gate wired into ingest — mail bearing any
+`Authentication-Results` header entered via an external MX path and is
+quarantined ([ADR-0003](docs/adr/0003-self-mail-carries-no-auth-results.md):
+legitimate authenticated self-mail carries none), zero model calls for
+invalid mail, bridge-owned worktree isolation (your working tree is never
+touched), `workspace-write` sandbox ceiling, redacted replies to yourself
+only.
 
 **Intended use**: your own mailbox, your own device, your own projects. Not
 for circumventing employer policy; don't bind a managed corporate mailbox.
