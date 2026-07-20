@@ -20,8 +20,15 @@
 2. 凭据、token、真实邮箱地址、真实本地路径绝不写入 git、日志或回复文本；
 3. 每类"向邮箱发送邮件"的新动作，首次执行前先向用户确认
    （同类动作确认一次后无需重复确认）；
-4. npm publish、GitHub Release、修改仓库设置等对外发布动作一律不执行，
-   到点整理好产物提请用户手动操作；
+4. **发布凭据绝不经 agent**：npm publish / GitHub Release 走 CI 自动化——推
+   `v*` tag 触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)，
+   凭仓库 secret `NPM_TOKEN` 与内置 `GITHUB_TOKEN` 完成；agent 编写维护流水线、
+   打 release tag 触发它，但**绝不经手 npm token / GitHub 密码等任何登录凭据**
+   （Anthropic 层硬约束，本文件无权放宽）。推 release tag（触发真实发布）每次先
+   向用户确认一次；改仓库设置等操作 agent 不擅自执行，逐次经用户确认（如经
+   GitHub 连接器）或由用户完成。见
+   [ADR-0005](docs/adr/0005-release-automation-ci-agent-tags.md) 与
+   [`docs/releasing.md`](docs/releasing.md)；
 5. 消耗模型额度的真实 E2E 测试（驱动 codex 实跑任务），先报预估再等用户确认；
 6. 外部接口行为与 spec 假设不符时：fail closed、写 ADR、停下来问用户，
    不得为绕过阻塞而降低安全设计。
@@ -58,6 +65,9 @@
 
 - P0-3 需用户从另一邮箱发送伪造对照邮件；
 - Phase 3 起需用户手机真机走查；
-- Phase 6 的发布动作（npm publish、GitHub Release）由用户执行。
+- 首次发布前，用户一次性在 GitHub 仓库添加 `NPM_TOKEN` secret（Settings →
+  Secrets and variables → Actions）；此后每次发布由 agent 打 `v*` tag 触发 CI
+  自动完成 publish + Release（agent 打 tag 前确认一次）。见
+  [`docs/releasing.md`](docs/releasing.md)。
 
 到点用一段话说清楚：需要什么、为什么、用户要做的具体步骤，然后暂停等待。

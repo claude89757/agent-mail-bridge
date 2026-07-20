@@ -1,0 +1,66 @@
+name: Release
+
+# Publish-on-tag. Pushing a v* tag builds, gates, publishes to npm (with
+# provenance) and cuts a GitHub Release. Credentials never pass through a person
+# or an agent interactively: the publish reads the repo secret NPM_TOKEN, the
+# Release uses the built-in GITHUB_TOKEN. See docs/releasing.md and ADR-0005.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # OIDC for npm provenance
+
+jobs:
+  release:
+    name: publish npm + GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      # Fail closed if the tag and package.json disagree: a release must ship
+      # exactly the version it claims. The ref is read from the environment,
+      # never interpolated into the script, to avoid tag-name injection.
+      - name: Verify tag matches package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag != package.json version $pkg"
+            exit 1
+          fi
+
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm build
+      - run: pnpm test
+
+      - name: Publish to npm (with provenance)
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          printf 'npm: https://www.npmjs.com/package/agent-mail-bridge/v/%s\n\nChangelog: https://github.com/%s/blob/%s/CHANGELOG.md\n' \
+            "$ver" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" > release-notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            --verify-tag
