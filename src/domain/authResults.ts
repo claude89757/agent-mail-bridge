@@ -309,3 +309,71 @@ export function checkDkimFactor(
 
   return { ok: false, reason: sawPass ? 'DOMAIN_MISMATCH' : 'NO_DKIM_PASS' };
 }
+
+/**
+ * Reject reason for the inverted self-submission auth factor (ADR-0003). A
+ * single value today; kept as a named type mirroring `IdentityReason` /
+ * `DkimFactorReason` so ingest's `status_reason` vocabulary stays greppable —
+ * do not rename it.
+ */
+export type SelfSubmissionAuthReason = 'AUTH_RESULTS_PRESENT';
+
+/**
+ * ADR-0003 (accepted 2026-07-20) inverted-polarity provider-authentication
+ * factor for `From==To==self` inbound mail. Measured evidence on the
+ * dedicated test mailbox is that authenticated internal self-submission
+ * reaches INBOX carrying NO `Authentication-Results` header at all (Gmail
+ * short-circuits it past the inbound MX auth pipeline), whereas external mail
+ * always carries one. So the polarity is the OPPOSITE of `checkDkimFactor`:
+ *
+ * - **PRESENCE is the reject trigger.** Any `Authentication-Results` header at
+ *   all ⇒ the mail traversed an MTA auth pipeline ⇒ external origin ⇒ it
+ *   cannot be a legitimate internal self-submission ⇒ reject
+ *   `AUTH_RESULTS_PRESENT`. The DKIM/SPF/DMARC verdict values are irrelevant
+ *   and NOT inspected — even a `dkim=pass` for some other aligned domain
+ *   rejects, because a genuine self-submission would have no header to inspect.
+ * - **Absence passes.** An empty input (the caller maps a missing header to
+ *   `[]`) is consistent with authenticated internal self-submission, so this
+ *   factor passes; every other gate (echo, readyAt, C1, time window) still
+ *   applies unchanged.
+ *
+ * Presence is judged on the RAW header list length, NOT on parsed content: a
+ * malformed or empty (`['']`) header still counts as present (it still proves
+ * MTA traversal) and still rejects — a verdict-based factor would fail OPEN
+ * there. Why presence-only is strictly more conservative than an authserv-id
+ * allowlist: it cannot fail open on a Gmail authserv-id string change, and
+ * because inversion means "more AR ⇒ more likely rejected", an
+ * attacker-injected extra AR only ever helps the reject.
+ *
+ * The `authservId` in the reject result is EVIDENCE only — the first parseable
+ * topmost authserv-id (which MTA stamped it), or `null` when none parses. It
+ * is NEVER consulted to accept or ignore an AR-bearing mail; doing so would
+ * reintroduce the authserv-id trust question (and a fail-open surface) this
+ * factor deliberately avoids. `parseAllAuthenticationResults` is reused solely
+ * to lift that evidence out — never to gate the reject on parse success.
+ *
+ * No IO, never throws (the parser it reuses is itself tolerant): pure list in,
+ * plain verdict out — same shape as `checkDkimFactor` / `checkIdentityC1`.
+ */
+export function checkSelfSubmissionAuthFactor(
+  rawAuthResultsHeaders: readonly string[],
+): { ok: true } | { ok: false; reason: SelfSubmissionAuthReason; authservId: string | null } {
+  if (rawAuthResultsHeaders.length === 0) {
+    return { ok: true };
+  }
+
+  // Already on the reject branch by virtue of presence (length > 0). The parse
+  // runs ONLY to lift the topmost stamping authserv-id out as reject evidence;
+  // its success/failure never changes the verdict — a header that parses to
+  // nothing useful still rejects.
+  const parsed = parseAllAuthenticationResults(rawAuthResultsHeaders);
+  let authservId: string | null = null;
+  for (const entry of parsed) {
+    if (entry.authservId !== null) {
+      authservId = entry.authservId;
+      break;
+    }
+  }
+
+  return { ok: false, reason: 'AUTH_RESULTS_PRESENT', authservId };
+}

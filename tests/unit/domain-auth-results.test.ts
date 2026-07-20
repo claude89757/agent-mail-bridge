@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   checkDkimFactor,
+  checkSelfSubmissionAuthFactor,
   parseAllAuthenticationResults,
   parseAuthenticationResults,
 } from '../../src/domain/authResults.js';
@@ -246,5 +247,115 @@ describe('checkDkimFactor (D-P3P-1, control C2 verdict)', () => {
     const result = checkDkimFactor(parsed, SELF_DOMAIN);
 
     expect(result).toEqual({ ok: false, reason: 'NO_DKIM_PASS' });
+  });
+});
+
+// Guards ADR-0003 (accepted 2026-07-20): the INVERTED-polarity self-submission
+// auth factor. Real evidence (dedicated test mailbox) showed authenticated
+// internal self-submission reaches INBOX with NO Authentication-Results header
+// at all (Gmail short-circuits it past the MX auth pipeline), while every
+// external mail carries one. So for From==To==self mail the polarity flips
+// relative to checkDkimFactor: PRESENCE of any Authentication-Results header
+// (not a dkim=pass verdict) is the reject trigger, because presence proves the
+// mail traversed an MTA auth pipeline ⇒ external origin ⇒ cannot be a genuine
+// internal self-submission. This is strictly MORE conservative than an
+// authserv-id allowlist (can't fail open on a Gmail authserv-id string change;
+// an attacker-injected extra AR only helps the reject). authservId rides along
+// as reject EVIDENCE only — which MTA stamped it — never as an accept filter.
+//
+// Placeholder domains only (public-repo rule); AR fixtures use realistic RFC
+// 8601 structure with example.com/example.net stand-ins for the signing/
+// authserv domains.
+describe('checkSelfSubmissionAuthFactor (ADR-0003, inverted control C2)', () => {
+  it('passes (ok: true) when no Authentication-Results headers are present at all', () => {
+    // The no-AR shape of a legitimate authenticated internal self-submission:
+    // the caller passes [] (ingest maps a missing header to []), factor passes.
+    const result = checkSelfSubmissionAuthFactor([]);
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('rejects AUTH_RESULTS_PRESENT for a single realistic Gmail AR header, surfacing its authservId as evidence', () => {
+    const raw =
+      'mx.google.com;\n' +
+      '       dkim=pass header.d=example.com header.i=@example.com header.s=20230601 header.b=AbCd1234;\n' +
+      '       spf=pass smtp.mailfrom=bridge-user@example.com;\n' +
+      '       dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=example.com';
+
+    const result = checkSelfSubmissionAuthFactor([raw]);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'AUTH_RESULTS_PRESENT',
+      authservId: 'mx.google.com',
+    });
+  });
+
+  it('rejects on PRESENCE regardless of the verdict: a dkim=fail header (the typical forged From:self shape) still rejects', () => {
+    // An external forger cannot obtain a valid gmail.com DKIM signature, so
+    // its MX-stamped AR shows failing/misaligned verdicts. The factor does not
+    // even look: presence alone rejects. This is the attack-side shape the MVP
+    // "forged From ⇒ 0 trigger" criterion targets.
+    const raw = 'mx.google.com; dkim=fail header.d=example.net; spf=softfail; dmarc=fail header.from=example.com';
+
+    const result = checkSelfSubmissionAuthFactor([raw]);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'AUTH_RESULTS_PRESENT',
+      authservId: 'mx.google.com',
+    });
+  });
+
+  it('rejects an empty-string header (presence-only boundary): a blank AR still means the mail carried the header ⇒ traversed an MTA', () => {
+    // The security heart of presence-only: a malformed/empty AR parses to no
+    // usable content and a null authservId, but its very existence on the
+    // message proves MTA traversal, so it MUST still reject (fail closed). A
+    // verdict-based factor would fail open here.
+    const result = checkSelfSubmissionAuthFactor(['']);
+
+    expect(result).toEqual({ ok: false, reason: 'AUTH_RESULTS_PRESENT', authservId: null });
+  });
+
+  it('rejects a forwarding chain (multiple AR headers), taking the first non-null authservId as evidence', () => {
+    const raws = [
+      'relay.example.net; dkim=fail header.d=example.net',
+      'mx.google.com; dkim=pass header.d=example.com',
+    ];
+
+    const result = checkSelfSubmissionAuthFactor(raws);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'AUTH_RESULTS_PRESENT',
+      authservId: 'relay.example.net',
+    });
+  });
+
+  it('skips a leading null authservId and takes the next parseable one as evidence', () => {
+    // First hop's header has no authserv-id token (empty before the ';');
+    // evidence extraction must skip it and surface the next non-null id, not
+    // stop at the first entry and report null.
+    const raws = ['; dkim=fail', 'mx.google.com; dkim=pass header.d=example.com'];
+
+    const result = checkSelfSubmissionAuthFactor(raws);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'AUTH_RESULTS_PRESENT',
+      authservId: 'mx.google.com',
+    });
+  });
+
+  it('rejects a malformed header without throwing (tolerant parse, fail closed on presence)', () => {
+    const raw = '@@@ not really a parseable AR header ;;; !!!';
+
+    expect(() => checkSelfSubmissionAuthFactor([raw])).not.toThrow();
+
+    const result = checkSelfSubmissionAuthFactor([raw]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('AUTH_RESULTS_PRESENT');
+    }
   });
 });
