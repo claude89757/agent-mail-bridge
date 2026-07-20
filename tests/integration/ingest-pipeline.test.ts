@@ -327,4 +327,49 @@ describe('ingest pipeline integration (Phase 2 Task 9)', () => {
       expect(harness.intentStore.countAll()).toBe(VALID_COUNT);
     });
   });
+
+  // Directly cashes the MVP acceptance criterion "forged From ⇒ 0 trigger"
+  // (the DKIM half; the echo half is the loop-guard test above). This forged
+  // case is the one C1 alone CANNOT catch: from==to==self, so it sails through
+  // the identity gate — but it carries an MX-stamped Authentication-Results
+  // header, which only external mail traversing the inbound auth pipeline ever
+  // has (ADR-0003 evidence). The inverted-polarity AUTH factor quarantines it
+  // on PRESENCE alone, end to end through the same deliver/fetchSince/
+  // filterNewUids/ingest chokepoints a real daemon poll loop uses.
+  describe('forged From==To==self carrying Authentication-Results (MVP: forged From ⇒ 0 trigger)', () => {
+    it('quarantines it as rejected AUTH_RESULTS_PRESENT with 0 intents, end to end', async () => {
+      const harness = setup();
+
+      // from/to default to SELF in buildMail, so this passes C1. The AR header
+      // (a failing/misaligned verdict — the typical forger shape, since an
+      // external sender cannot obtain a valid self-domain DKIM signature) is
+      // what betrays external origin. Header key is lowercase per the
+      // IncomingMail contract (imapRead lowercases every header name).
+      const forged = buildMail({
+        uid: 1,
+        messageId: '<forged-self-ar-1@example.com>',
+        headers: new Map([
+          [
+            'authentication-results',
+            [
+              'mx.google.com; dkim=fail header.d=example.net; ' +
+                'spf=softfail; dmarc=fail header.from=example.com',
+            ],
+          ],
+        ]),
+      });
+      harness.transport.deliver(forged);
+
+      const toIngest = await pollNew(harness);
+      expect(toIngest).toHaveLength(1);
+
+      const results = toIngest.map((mail) => harness.ingest(mail, NOW));
+      const [result] = results;
+
+      expect(result?.outcome).toBe('rejected');
+      expect(result?.reason).toBe('AUTH_RESULTS_PRESENT');
+      expect(harness.intentStore.countAll()).toBe(0);
+      expect(countCommandsByStatus(harness.db, 'REJECTED')).toBe(1);
+    });
+  });
 });

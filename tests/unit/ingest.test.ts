@@ -373,6 +373,185 @@ describe('createIngest / ingestMail (D-P2-8)', () => {
     });
   });
 
+  // Guards ADR-0003 (accepted) control-C2 wiring: the inverted-polarity
+  // self-submission auth factor sits in the chain AFTER C1 identity and BEFORE
+  // the time window. A From==To==self mail carrying ANY Authentication-Results
+  // header traversed an MTA auth pipeline ⇒ external origin ⇒ forged ⇒ reject
+  // AUTH_RESULTS_PRESENT; no such header ⇒ pass. checkSelfSubmissionAuthFactor's
+  // own unit coverage is in tests/unit/domain-auth-results.test.ts — here we
+  // pin the wiring: that ingest reads the right (lowercase) header key, forwards
+  // the reason verbatim, creates 0 intents, and — critically — sits at the
+  // correct point in the gate chain.
+  describe('AUTH self-submission factor wiring (ADR-0003, control C2)', () => {
+    // One realistic MX-stamped Authentication-Results value; placeholder
+    // domains only (RFC 2606). The dkim=pass here is deliberately for "self"
+    // (example.com) to prove the factor rejects on PRESENCE, not on a failing
+    // verdict — a legitimate self-submission would carry NO such header at all.
+    const AR_HEADER =
+      'mx.google.com; dkim=pass header.d=example.com; ' +
+      'spf=pass smtp.mailfrom=bridge-user@example.com; dmarc=pass header.from=example.com';
+
+    it('rejects AUTH_RESULTS_PRESENT for a From==To==self mail carrying an Authentication-Results header, with 0 intents (MVP forged-From, DKIM half)', () => {
+      const deps = setup();
+      const ingest = createIngest(deps);
+
+      // from/to are both self, so C1 PASSES — this is exactly the forged case
+      // C1 alone cannot catch. The header key is lowercase because imapRead
+      // lowercases every header name before ingest sees it (the IncomingMail
+      // contract; pinned by tests/unit/imap-read-transport.test.ts
+      // "lowercases header names").
+      const result = ingest(
+        mail({ headers: new Map([['authentication-results', [AR_HEADER]]]) }),
+        new Date('2026-07-17T00:00:05.000Z'),
+      );
+
+      expect(result.outcome).toBe('rejected');
+      expect(result.reason).toBe('AUTH_RESULTS_PRESENT');
+      expect(deps.commandStore.getByMessageId('msg-1@example.com')?.status).toBe('REJECTED');
+      expect(deps.intentStore.countAll()).toBe(0);
+    });
+
+    it('passes the AUTH gate when no Authentication-Results header is present (legitimate self-submission reaches ready)', () => {
+      const deps = setup();
+      const ingest = createIngest(deps);
+
+      // Default mail() carries an empty headers map ⇒ headers.get(...) is
+      // undefined ⇒ the factor sees [] ⇒ passes, and the mail reaches ready.
+      const result = ingest(mail(), new Date('2026-07-17T00:00:05.000Z'));
+
+      expect(result.outcome).toBe('ready');
+      expect(result.reason).toBeNull();
+      expect(deps.intentStore.countAll()).toBe(1);
+    });
+
+    it('rejects even a blank Authentication-Results header (presence-only): [""] still proves MTA traversal', () => {
+      const deps = setup();
+      const ingest = createIngest(deps);
+
+      const result = ingest(
+        mail({ headers: new Map([['authentication-results', ['']]]) }),
+        new Date('2026-07-17T00:00:05.000Z'),
+      );
+
+      expect(result.outcome).toBe('rejected');
+      expect(result.reason).toBe('AUTH_RESULTS_PRESENT');
+      expect(deps.intentStore.countAll()).toBe(0);
+    });
+
+    it('finds the header via the lowercase key the IncomingMail contract guarantees (mixed-case wire name normalized by imapRead)', () => {
+      const deps = setup();
+      const ingest = createIngest(deps);
+
+      // On the wire the header is `Authentication-Results`; imapRead lowercases
+      // every header name before ingest sees it. Build the key the same way the
+      // contract guarantees it (lowercasing the wire name) so this test breaks
+      // if ingest ever reads a non-normalized key.
+      const wireName = 'Authentication-Results';
+      const result = ingest(
+        mail({ headers: new Map([[wireName.toLowerCase(), [AR_HEADER]]]) }),
+        new Date('2026-07-17T00:00:05.000Z'),
+      );
+
+      expect(result.outcome).toBe('rejected');
+      expect(result.reason).toBe('AUTH_RESULTS_PRESENT');
+    });
+
+    describe('gate ordering (D-P3B16-2): echo → readyAt → C1 → AUTH → window', () => {
+      it('echo BEFORE AUTH: a recognized echo carrying an Authentication-Results header is still echo, not quarantined', () => {
+        const deps = setup();
+        deps.outboxStore.create({
+          id: 'outbox-ar',
+          messageId: 'reply-ar@example.com',
+          commandId: null,
+          kind: 'ACK',
+          now: '2026-07-17T00:00:01.000Z',
+        });
+        const ingest = createIngest(deps);
+
+        // Known outbox id ⇒ echo. Even with an AR header present, the echo gate
+        // (which runs first) claims it: the bridge's own replies are legitimate
+        // system mail for loop-guarding/reconciliation. An attacker cannot
+        // abuse this — echo still requires a recorded outboxStore id it cannot
+        // mint.
+        const result = ingest(
+          mail({
+            messageId: '<incoming-echo-ar@example.com>',
+            headers: new Map([
+              ['x-amb-outbox-id', ['outbox-ar']],
+              ['authentication-results', [AR_HEADER]],
+            ]),
+            from: [],
+            to: [],
+            cc: [],
+          }),
+          new Date('2026-07-17T00:00:05.000Z'),
+        );
+
+        expect(result.outcome).toBe('echo');
+        expect(result.reason).toBeNull();
+        expect(deps.intentStore.countAll()).toBe(0);
+      });
+
+      it('C1 BEFORE AUTH: an identity failure (From != self) reports IDENTITY_FROM even when an Authentication-Results header is present', () => {
+        const deps = setup();
+        const ingest = createIngest(deps);
+
+        // AUTH must not pre-empt C1: a non-self-addressed mail is rejected as
+        // IDENTITY_* first and never reaches — nor leaks a verdict through —
+        // the AUTH branch.
+        const result = ingest(
+          mail({
+            from: ['attacker@example.net'],
+            headers: new Map([['authentication-results', [AR_HEADER]]]),
+          }),
+          new Date('2026-07-17T00:00:05.000Z'),
+        );
+
+        expect(result.outcome).toBe('rejected');
+        expect(result.reason).toBe('IDENTITY_FROM');
+      });
+
+      it('readyAt BEFORE AUTH: a pre-readyAt mail reports BEFORE_READY even when an Authentication-Results header is present', () => {
+        const deps = setup();
+        const ingest = createIngest(deps);
+
+        const result = ingest(
+          mail({
+            internalDate: '2026-07-16T23:59:59.000Z',
+            headers: new Map([['authentication-results', [AR_HEADER]]]),
+          }),
+          new Date('2026-07-17T00:00:05.000Z'),
+        );
+
+        expect(result.outcome).toBe('rejected');
+        expect(result.reason).toBe('BEFORE_READY');
+      });
+
+      it('AUTH BEFORE window: a no-AR mail outside the window reaches the window gate and is queued-window (AUTH passed first)', () => {
+        const window: TimeWindowConfig = {
+          timezone: 'Asia/Shanghai',
+          days: [0, 1, 2, 3, 4, 5, 6],
+          start: '09:00',
+          end: '18:00',
+          excludeDates: [],
+        };
+        const deps = setup({ config: { timeWindow: window } });
+        const ingest = createIngest(deps);
+        // 2026-07-17T00:00:00Z = Shanghai 08:00 (Fri) — before the 09:00 open.
+        const outsideNow = new Date('2026-07-17T00:00:00Z');
+
+        // No AR ⇒ AUTH passes ⇒ control reaches the window gate ⇒
+        // queued-window, NOT rejected. If AUTH wrongly rejected no-AR mail this
+        // would be rejected/AUTH_RESULTS_PRESENT instead.
+        const result = ingest(mail(), outsideNow);
+
+        expect(result.outcome).toBe('queued-window');
+        expect(result.reason).toBe('outside-hours');
+        expect(deps.intentStore.countAll()).toBe(0);
+      });
+    });
+  });
+
   describe('time window (D-P2-6)', () => {
     const window: TimeWindowConfig = {
       timezone: 'Asia/Shanghai',

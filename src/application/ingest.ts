@@ -10,7 +10,8 @@
  * ordering, not an arbitrary implementation choice):
  *
  *   idempotent insert -> [NO_MESSAGE_ID short-circuit] -> echo gate
- *     -> readyAt fence -> C1 identity -> time window -> intent creation
+ *     -> readyAt fence -> C1 identity -> AUTH self-submission factor
+ *     -> time window -> intent creation
  *
  * Why this order, read top to bottom:
  *  1. Idempotent insert happens FIRST and unconditionally: every
@@ -38,10 +39,35 @@
  *     rejected regardless of how well-formed its addresses are — the
  *     first-install guarantee ("never act on history") does not get
  *     weaker just because a mail also happens to look identity-valid.
- *  5. Time window is last of the reject/queue gates: only mail that is
- *     genuinely ours, fresh enough, and correctly addressed ever reaches the
- *     question of "queue for later or dispatch now."
- *  6. Intent creation is the only step reachable after every gate passes.
+ *  5. AUTH self-submission factor (ADR-0003, accepted) runs AFTER C1 and
+ *     BEFORE the time window. It rejects any From==To==self mail that carries
+ *     an `Authentication-Results` header at all: presence proves the mail
+ *     traversed an MTA auth pipeline (external origin), so it cannot be a
+ *     legitimate internal self-submission — Gmail short-circuits authenticated
+ *     self-mail straight to INBOX with no such header (ADR-0003's evidence).
+ *     Presence, not any dkim/spf/dmarc verdict, is the trigger; see
+ *     `checkSelfSubmissionAuthFactor` for why presence-only is strictly more
+ *     conservative than an authserv-id allowlist. This PLACEMENT is itself a
+ *     security property, pinned by ordering tests in tests/unit/ingest.test.ts:
+ *       - echo BEFORE AUTH: the bridge's own reflected replies are legitimate
+ *         system mail (loop guard / reconciliation); even if some delivery
+ *         path stamped one with an AR it must classify as `echo`, not be
+ *         quarantined. An attacker cannot exploit this — echo still requires a
+ *         recorded outboxStore id (point 3) that a forger cannot mint.
+ *       - C1 BEFORE AUTH: this factor's premise is that the mail CLAIMS to be
+ *         self-sent (From==To==self). Mail that is not self-addressed is
+ *         rejected by C1 with an IDENTITY_* reason first, and never reaches —
+ *         nor leaks an AR verdict through — the AUTH branch.
+ *       - AUTH BEFORE the time window: AUTH is a reject gate, the window a
+ *         QUEUE gate. A forged (AR-bearing) mail must terminate as `rejected`,
+ *         never be parked as `queued-window` merely because it arrived outside
+ *         configured hours — a queued command is a placeholder that could
+ *         later dispatch.
+ *  6. Time window is last of the reject/queue gates: only mail that is
+ *     genuinely ours, fresh enough, correctly addressed, AND free of external
+ *     authentication headers ever reaches the question of "queue for later or
+ *     dispatch now."
+ *  7. Intent creation is the only step reachable after every gate passes.
  *     `deriveIntentId` is deterministic, so re-running it for the same
  *     command id would be idempotent regardless — though per point 1 this
  *     step in practice only ever runs once per command row.
@@ -89,6 +115,7 @@
  * internally — `now` always arrives from the caller so ingest stays
  * deterministic and testable.
  */
+import { checkSelfSubmissionAuthFactor } from '../domain/authResults.js';
 import { classifyEcho } from '../domain/echo.js';
 import { checkIdentityC1 } from '../domain/identity.js';
 import {
@@ -263,6 +290,26 @@ export function createIngest(deps: IngestDeps): (mail: IncomingMail, now: Date) 
       );
       if (!identity.ok) {
         return reject(identity.reason);
+      }
+
+      // AUTH self-submission factor (ADR-0003, accepted; module doc point 5).
+      // Inverted polarity: a From==To==self mail carrying ANY
+      // Authentication-Results header traversed an MTA auth pipeline ⇒
+      // external origin ⇒ cannot be a legitimate internal self-submission ⇒
+      // reject AUTH_RESULTS_PRESENT. PRESENCE is the trigger, not any
+      // dkim/spf/dmarc verdict. The header name is lowercase because imapRead
+      // lowercases every header name (src/transports/imapRead.ts) — the same
+      // convention the echo gate's 'x-amb-outbox-id' read uses above; a mail
+      // with no such header yields undefined ⇒ [] ⇒ this factor passes. The
+      // returned authservId is reject EVIDENCE only (which MTA stamped it),
+      // never used to accept an AR-bearing mail (that would fail open); v0.1
+      // does not persist it — AUTH_RESULTS_PRESENT already locates the reject
+      // and ingest has no log seam.
+      const authFactor = checkSelfSubmissionAuthFactor(
+        mail.headers.get('authentication-results') ?? [],
+      );
+      if (!authFactor.ok) {
+        return reject(authFactor.reason);
       }
 
       const windowVerdict = isWithinWindow(config.timeWindow, now);
