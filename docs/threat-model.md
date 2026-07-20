@@ -103,8 +103,14 @@ Every control is testable; MVP acceptance (spec §6) requires evidence.
   not parked `QUEUED_WINDOW`); security review APPROVED after challenging the
   fail-closed posture with 3 penetration probes (parsed-length presence,
   verdict-trust reintroduction, echo-order swap — each caught by existing
-  tests) and replaying 4+3 mutations. Real forged-From controls (方案 B) stay
-  a user gate; the 8/8 external MX sample already grounds the mechanism.
+  tests) and replaying 4+3 mutations. **Confirmed live (2026-07-20):** the
+  full-pipeline E2E drove a real authenticated self-mail through the wired
+  gate and it reached `READY_FOR_DISPATCH` (no AR present), exactly as
+  ADR-0003 predicts — the test would have surfaced an `AUTH_RESULTS_PRESENT`
+  quarantine as a falsification and did not
+  ([Phase 6 E2E acceptance](reports/phase-6-e2e-acceptance.md)). Real
+  forged-From controls (方案 B) stay a user gate; the 8/8 external MX sample
+  already grounds the mechanism.
 - **C3 — Echo gate.** Bridge-sent mail carries an own `Message-ID` and
   `X-AMB-Outbox-ID`; both are recorded before send, so inbound copies are
   classified `SYSTEM_ECHO` and never routed.

@@ -22,13 +22,18 @@ your mail provider is the only intermediary.
   transactional outbox; 850+ tests, every external seam (IMAP, SMTP, codex,
   git, filesystem, clock) faked in tests.
 - **Live-verified** — the IMAP read path (read-only, against a dedicated
-  test mailbox) and the SMTP send round-trip (a production-path self-send
-  whose `Message-ID` and echo markers were read back over IMAP).
-- **Not yet** — the clarification mail flow (replying `1`/`2`/`new` to an
-  ambiguous command) waits on a real-device walkthrough; and no full
-  end-to-end run (a real mail driving a real codex task) has been performed
-  yet. "From README to the first result mail in ≤ 10 minutes" is the v0.1.0
-  acceptance target, not a demonstrated number.
+  test mailbox), the SMTP send round-trip (a production-path self-send whose
+  `Message-ID` and echo markers were read back over IMAP), and the full
+  pipeline end to end: a real self-mail drove a real codex task in a
+  bridge-owned worktree and the scrubbed result mailed itself back — twice
+  (a fresh command, then a thread reply that resumed the same codex session),
+  in ~48 s and ~52 s round-trip, with the delivered replies verified to carry
+  no credential, worktree path, or home-directory string.
+- **Not yet** — the interactive clarification mail flow (replying
+  `1`/`2`/`new` to an ambiguous command) waits on a real-device walkthrough.
+  "From README to the first result mail in ≤ 10 minutes" is the v0.1.0
+  acceptance target; the end-to-end command round-trip above already lands
+  well inside it — the rest is a human doing first-time setup.
 
 Roadmap and design decisions:
 [docs/superpowers/specs/2026-07-17-agent-mail-bridge-roadmap-design.md](docs/superpowers/specs/2026-07-17-agent-mail-bridge-roadmap-design.md)

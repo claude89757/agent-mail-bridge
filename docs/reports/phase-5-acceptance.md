@@ -21,16 +21,22 @@
 ## Exit criterion
 
 “A clean machine goes from README to the first result mail in ≤ 10
-minutes” — **pending measurement**: the README usage documentation is in
-place (every command cross-checked against `src/cli/**`), the mail
-round-trip halves are live-verified (IMAP read 3/3, SMTP self-send echo
-round-trip 12 s), and the full chain (ingest → codex dispatch → redacted
-result reply) awaits the red-line-5 E2E approval, which will time this
-metric.
+minutes” — **met (measured 2026-07-20)**. The full-pipeline red-line-5 E2E
+drove a real self-mail through the real chain (ingest → identity/AUTH gate →
+route → codex dispatch in a bridge-owned worktree → redacted result reply →
+SMTP → read back) with a **~48 s** command→result-mail round-trip, and a
+follow-up thread reply resumed the SAME codex session in **~52 s** — both an
+order of magnitude inside the 10-minute target (the remaining budget is a
+human doing first-time setup, not the machine). Full evidence, red-line
+accounting and the ADR-0003 live confirmation:
+[Phase 6 E2E acceptance](phase-6-e2e-acceptance.md).
 
 ## Upstream items outside Phase 5 scope (stated honestly)
 
-- Identity-gate wiring: blocked on the user's ADR-0003 decision (red line 6);
+- Identity-gate wiring: **done** — ADR-0003 accepted (2026-07-20), wired into
+  the ingest chain (batch 16) and confirmed live end to end by the E2E
+  (batch 17: the authenticated self-mail reached `READY_FOR_DISPATCH`, not
+  `AUTH_RESULTS_PRESENT`);
 - The interactive clarification flow: blocked on the real-device walkthrough
   (spec open question 2);
 - IDLE watch: follow-up by design — the 30 s poll already meets the

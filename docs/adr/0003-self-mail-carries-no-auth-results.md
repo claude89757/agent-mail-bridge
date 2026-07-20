@@ -99,13 +99,30 @@ needs to accept some AR-bearing mail, that reintroduces the authserv-id
 trust question under a new ADR; `checkDkimFactor`'s pass-requiring form
 remains in the codebase for it.
 
+## Live validation (2026-07-20, full-pipeline E2E)
+
+The full-pipeline E2E (`tests/live/e2e-full-live.test.ts`, the red-line-5 run
+approved and executed 2026-07-20) closed the last open confirmation: an
+authenticated self-send driven all the way through the REAL ingest chain
+reached `READY_FOR_DISPATCH` — i.e. it carried NO `Authentication-Results`
+and passed the wired AUTH factor live, exactly as this ADR predicts, and went
+on to a real codex dispatch and reply. Had the self-mail arrived AR-bearing,
+the gate would have quarantined it `AUTH_RESULTS_PRESENT` before any dispatch
+(fail closed, zero model quota spent), and the test is written to surface that
+as an explicit ADR-0003 falsification. It did not: the assumption holds
+against the live server end to end. 方案 B forged-From controls (item 2 above)
+remain the one un-exercised confirmation and stay on the user-action list —
+the accept decision never waited on them, and this live pass further reduces
+their urgency to "nice to have, not blocking".
+
 ## Consequences
 
-- The identity-gate DKIM wiring batch stays **blocked** until this ADR is
-  accepted or amended by the user.
+- The identity-gate wiring batch was **unblocked** by the 2026-07-20
+  acceptance and has since landed (batch 16) and been live-validated end to
+  end (batch 17 E2E, above).
 - Unaffected and proceeding: SMTP send transport (ADR-0002), router,
   clarification, daemon batches.
-- `docs/threat-model.md` C2 must reference this ADR once decided.
+- `docs/threat-model.md` C2 references this ADR (done).
 
 ## Reproduction steps
 
