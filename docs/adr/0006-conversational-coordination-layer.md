@@ -47,7 +47,7 @@
 | 需求 | codex 能力(实测) |
 | --- | --- |
 | 协调会话无写权 | `codex exec --sandbox read-only` — 文件系统只读,sandbox 级保证(纵深防御第一层) |
-| 只读元查询工具 | `codex mcp add <NAME> -- <cmd>` / `mcp_servers` 配置 — bridge 以 **stdio MCP server** 暴露 `list_projects` / `list_sessions` / `get_status` 等只读工具;返回值在**工具边界脱敏**(路径→别名),协调 agent 永不见真实路径原文(红线 2 在此守住) |
+| 只读元查询工具 | ~~`codex mcp add <NAME> -- <cmd>` / `mcp_servers` 配置 — bridge 以 **stdio MCP server** 暴露 `list_projects` / `list_sessions` / `get_status` 等只读工具~~ **注:批次 D spike 实测此路径不可行(codex exec 非交互 + sandbox 下 MCP 工具一律被取消),已由 [ADR-0007](0007-coordinator-context-prompt-injection-not-mcp.md) 改为 bridge 把脱敏快照预注入 prompt。**脱敏语义不变(路径→别名,红线 2 守住),只是投递方式从「MCP 拉」变「prompt 推」;MCP 适配层保留待 codex 修复后回迁 |
 | 结构化决策输出 | `codex exec --output-schema <FILE>` — 强制最终响应符合 decision JSON Schema(`dispatch` \| `clarify` \| `answer` + 参数),无需正则刮取;`-o` 落盘最终消息 |
 | 多轮协调对话 | `codex exec resume <thread_id>`(ADR-0004:thread_id 稳定、上下文保留、resume 命中 prompt 缓存)— 邮件线程内多轮协调用 resume 实现 |
 
@@ -86,9 +86,11 @@
 
 ## 后续 spike / 未决(实现期解决,不阻塞本决策)
 
-1. **codex 协调承载联调 spike**(P0 级):`--sandbox read-only` + stdio MCP server +
-   `--output-schema` 三者串起来实跑一次,确认工具调用与结构化输出如约。**消耗少量
-   额度,按红线 5 先报预估再跑**。
+1. ~~**codex 协调承载联调 spike**(P0 级):`--sandbox read-only` + stdio MCP server +
+   `--output-schema` 三者串起来实跑一次~~ **已跑(2026-07-21,批次 D)→
+   [ADR-0007](0007-coordinator-context-prompt-injection-not-mcp.md)**:三件套技术可组合,
+   但 MCP 工具在非交互 exec 下一律被取消;`--output-schema` 可用(须 root object + anyOf +
+   envelope);故只读上下文改 prompt 预注入。
 2. decision JSON Schema 与只读工具集的精确契约。
 3. 协调对话状态模型(三层映射的持久化与崩溃一致性)。
 4. 元问答 / 跨项目的脱敏与权限边界细化(哪些字段可回、跨项目 dispatch 的确认语义)。
