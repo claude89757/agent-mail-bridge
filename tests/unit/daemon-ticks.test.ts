@@ -4,6 +4,11 @@ import type { CreateWorktreeInput } from '../../src/application/worktreeManager.
 import { deriveIntentId, normalizeMessageId } from '../../src/domain/mail.js';
 import type { NormalizedMessageId } from '../../src/domain/mail.js';
 import type { ProjectEntry, ProjectIndex } from '../../src/application/projectIndex.js';
+import type {
+  CoordinatorRunInput,
+  CoordinatorRunOutcome,
+  RunCoordinatorTurn,
+} from '../../src/drivers/coordinatorDriver.js';
 import type { DriverEvent } from '../../src/drivers/types.js';
 import { buildRegisterOutbox } from '../../src/daemon/replySender.js';
 import {
@@ -14,10 +19,11 @@ import {
   sweepExpiredClarifications,
   sweepStrandedSending,
 } from '../../src/daemon/ticks.js';
-import type { MailTickDeps } from '../../src/daemon/ticks.js';
+import type { CoordinatorTickConfig, MailTickDeps } from '../../src/daemon/ticks.js';
 import { openDatabase } from '../../src/store/database.js';
 import { ClarificationStore } from '../../src/store/clarificationStore.js';
 import { CommandStore } from '../../src/store/commandStore.js';
+import { CoordinatorSessionStore } from '../../src/store/coordinatorSessionStore.js';
 import { IntentStore } from '../../src/store/intentStore.js';
 import { MetaStore } from '../../src/store/metaStore.js';
 import { OutboxStore } from '../../src/store/outboxStore.js';
@@ -846,6 +852,221 @@ describe('dispatchReadyCommand alreadyTold dedupe (direct, D-P5B12-2)', () => {
     expect(second.reply).toBeNull();
     expect(harness.transport.sentMails).toHaveLength(1);
     expect(harness.intentStore.getById(intentId)?.status).toBe('PENDING');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0006 coordinator path (batch E-d wiring)
+// ---------------------------------------------------------------------------
+
+const COORD_UUID = '11111111-2222-3333-4444-555555555555';
+const COORD_CWD = '/tmp/fixtures/coord-cwd';
+const COORD_SCHEMA_PATH = '/tmp/fixtures/coord-schema.json';
+
+interface CoordProbe {
+  /** The REAL coordinator-session store the daemon persisted resume ids into. */
+  sessionStore: CoordinatorSessionStore;
+  /** Every input the daemon fed the (fake) coordinator turn, in call order. */
+  inputs: CoordinatorRunInput[];
+}
+
+/** Attaches a scripted coordinator to `harness.deps`: a fake
+ *  `runCoordinatorTurn` that returns `outcomes[n]` on its n-th call (the last
+ *  one repeats) and records its inputs, over a REAL `CoordinatorSessionStore`
+ *  on the harness db — so persistence + resume threading are exercised for
+ *  real, only the model turn is faked. */
+function attachCoordinator(harness: Harness, outcomes: readonly CoordinatorRunOutcome[]): CoordProbe {
+  const sessionStore = new CoordinatorSessionStore(harness.db);
+  const inputs: CoordinatorRunInput[] = [];
+  let call = 0;
+  const runCoordinatorTurn: RunCoordinatorTurn = (input) => {
+    inputs.push(input);
+    const outcome = outcomes[Math.min(call, outcomes.length - 1)];
+    call += 1;
+    if (outcome === undefined) {
+      throw new Error('test fixture bug: attachCoordinator needs at least one outcome');
+    }
+    return Promise.resolve(outcome);
+  };
+  harness.deps.coordinator = {
+    runCoordinatorTurn,
+    coordinatorSessionStore: sessionStore,
+    coordinatorCwd: COORD_CWD,
+    schemaPath: COORD_SCHEMA_PATH,
+  } satisfies CoordinatorTickConfig;
+  return { sessionStore, inputs };
+}
+
+/** Delivers + ingests a command mail (mirrors the alreadyTold direct test),
+ *  returning the ids a direct `dispatchReadyCommand` call needs. */
+function seedReady(harness: Harness, mail: IncomingMail): { commandId: number; intentId: string } {
+  harness.transport.deliver(mail);
+  harness.ingestDirect(mail);
+  const normalized = normalizeMessageId(mail.messageId);
+  if (normalized === null) {
+    throw new Error(`test fixture bug: ${mail.messageId} does not normalize`);
+  }
+  const command = harness.commandStore.getByMessageId(normalized);
+  if (command === null) {
+    throw new Error('test fixture bug: command row missing after ingest');
+  }
+  return { commandId: command.id, intentId: deriveIntentId(normalized) };
+}
+
+describe('dispatchReadyCommand coordinator path (ADR-0006, batch E-d)', () => {
+  it('answer → intent RESOLVED, 💬 answer RESULT reply, coordinator session persisted', async () => {
+    const harness = setup();
+    const coord = attachCoordinator(harness, [
+      {
+        kind: 'decided',
+        decision: { kind: 'answer', text: 'two tasks are running.' },
+        sessionId: COORD_UUID,
+      },
+    ]);
+    const mail = commandMail({ messageId: '<coord-answer@example.com>' });
+    const { commandId, intentId } = seedReady(harness, mail);
+
+    const result = await dispatchReadyCommand(harness.deps, mail, commandId, intentId);
+
+    expect(result.executed).toBe(false);
+    expect(result.reply?.status).toBe('SENT');
+    expect(harness.intentStore.getById(intentId)?.status).toBe('RESOLVED');
+
+    const sent = harness.transport.sentMails.at(-1);
+    expect(sent?.bodyRedacted).toContain('💬 answer');
+    expect(sent?.bodyRedacted).toContain('two tasks are running.');
+    expect(harness.outboxStore.findByCommandId(commandId)[0]?.kind).toBe('RESULT');
+
+    // no agent ran, and the coordinator's OWN thread id is persisted for resume
+    expect(harness.driver.startTaskCalls).toHaveLength(0);
+    expect(harness.sessionStore.findByThreadKey('coord-answer@example.com')).toBeUndefined();
+    expect(
+      coord.sessionStore.findByThreadKey('coord-answer@example.com')?.coordinatorThreadId,
+    ).toBe(COORD_UUID);
+  });
+
+  it('clarify → intent RESOLVED, ❓ clarification reply carrying option names', async () => {
+    const harness = setup();
+    const coord = attachCoordinator(harness, [
+      {
+        kind: 'decided',
+        decision: {
+          kind: 'clarify',
+          question: 'which project did you mean?',
+          options: ['proj-a', 'proj-b'],
+        },
+        sessionId: COORD_UUID,
+      },
+    ]);
+    const mail = commandMail({ messageId: '<coord-clarify@example.com>' });
+    const { commandId, intentId } = seedReady(harness, mail);
+
+    const result = await dispatchReadyCommand(harness.deps, mail, commandId, intentId);
+
+    expect(result.executed).toBe(false);
+    expect(harness.intentStore.getById(intentId)?.status).toBe('RESOLVED');
+
+    const sent = harness.transport.sentMails.at(-1);
+    expect(sent?.bodyRedacted).toContain('❓ clarification');
+    expect(sent?.bodyRedacted).toContain('which project did you mean?');
+    expect(sent?.bodyRedacted).toContain('- proj-a');
+    expect(sent?.bodyRedacted).toContain('- proj-b');
+    expect(harness.outboxStore.findByCommandId(commandId)[0]?.kind).toBe('CLARIFICATION');
+    expect(
+      coord.sessionStore.findByThreadKey('coord-clarify@example.com')?.coordinatorThreadId,
+    ).toBe(COORD_UUID);
+  });
+
+  it('dispatch new → shared tail runs on the DECISION prompt, COMPLETED + RESULT reply', async () => {
+    const harness = setup(); // default script = one completed segment
+    const coord = attachCoordinator(harness, [
+      {
+        kind: 'decided',
+        decision: {
+          kind: 'dispatch',
+          projectAlias: 'proj-a',
+          prompt: 'do the coordinated thing',
+          mode: 'new',
+        },
+        sessionId: COORD_UUID,
+      },
+    ]);
+    // The subject term is NOT a project name — only the coordinator's
+    // projectAlias can route this, proving the coordinator (not routeCommand)
+    // decided the dispatch.
+    const mail = commandMail({
+      messageId: '<coord-dispatch@example.com>',
+      headers: new Map([['subject', ['hey can you look into the flaky test']]]),
+      bodyText: 'the CI keeps going red',
+    });
+    const { commandId, intentId } = seedReady(harness, mail);
+
+    const result = await dispatchReadyCommand(harness.deps, mail, commandId, intentId);
+
+    expect(result.executed).toBe(true);
+    expect(harness.intentStore.getById(intentId)?.status).toBe('COMPLETED');
+    // the coordinator's decision.prompt drove the driver, NOT the mail body
+    expect(harness.driver.startTaskCalls[0]?.prompt).toBe('do the coordinated thing');
+
+    const sent = harness.transport.sentMails.at(-1);
+    expect(sent?.bodyRedacted).toContain('✅ completed (DISPATCH_NEW)');
+    // both mappings recorded: the execution session AND the coordinator session
+    expect(harness.sessionStore.findByThreadKey('coord-dispatch@example.com')).toBeDefined();
+    expect(
+      coord.sessionStore.findByThreadKey('coord-dispatch@example.com')?.coordinatorThreadId,
+    ).toBe(COORD_UUID);
+  });
+
+  it('fell-back → deterministic router takes over (subject term routes); no coordinator session written', async () => {
+    const harness = setup();
+    const coord = attachCoordinator(harness, [
+      { kind: 'failed', reason: 'coordinator crashed before completing' },
+    ]);
+    // default subject 'proj-a run tests' → the deterministic term routes to proj-a
+    const mail = commandMail({ messageId: '<coord-fallback@example.com>' });
+    const { commandId, intentId } = seedReady(harness, mail);
+
+    const result = await dispatchReadyCommand(harness.deps, mail, commandId, intentId);
+
+    expect(result.executed).toBe(true);
+    expect(harness.intentStore.getById(intentId)?.status).toBe('COMPLETED');
+    // the deterministic path uses the mail body as the prompt, not any decision
+    expect(harness.driver.startTaskCalls[0]?.prompt).toBe('run the quarterly cleanup task');
+
+    const sent = harness.transport.sentMails.at(-1);
+    expect(sent?.bodyRedacted).toContain('✅ completed (DISPATCH_NEW)');
+    // a failed turn carries no id — nothing persisted, so the next mail also
+    // starts a fresh coordinator conversation
+    expect(coord.sessionStore.findByThreadKey('coord-fallback@example.com')).toBeUndefined();
+  });
+
+  it('an already-persisted coordinator session is passed back as resumeSessionId', async () => {
+    const harness = setup();
+    const coord = attachCoordinator(harness, [
+      { kind: 'decided', decision: { kind: 'answer', text: 'still running.' }, sessionId: COORD_UUID },
+    ]);
+    coord.sessionStore.upsert('coord-resume@example.com', COORD_UUID, SEED_NOW);
+    const mail = commandMail({ messageId: '<coord-resume@example.com>' });
+    const { commandId, intentId } = seedReady(harness, mail);
+
+    await dispatchReadyCommand(harness.deps, mail, commandId, intentId);
+
+    expect(coord.inputs).toHaveLength(1);
+    expect(coord.inputs[0]?.resumeSessionId).toBe(COORD_UUID);
+  });
+
+  it('a succeeded turn with a null sessionId persists NO coordinator session', async () => {
+    const harness = setup();
+    const coord = attachCoordinator(harness, [
+      { kind: 'decided', decision: { kind: 'answer', text: 'ok.' }, sessionId: null },
+    ]);
+    const mail = commandMail({ messageId: '<coord-nullid@example.com>' });
+    const { commandId, intentId } = seedReady(harness, mail);
+
+    await dispatchReadyCommand(harness.deps, mail, commandId, intentId);
+
+    expect(harness.intentStore.getById(intentId)?.status).toBe('RESOLVED');
+    expect(coord.sessionStore.findByThreadKey('coord-nullid@example.com')).toBeUndefined();
   });
 });
 

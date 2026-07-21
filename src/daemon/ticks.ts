@@ -81,28 +81,33 @@
  * through `deps.clock` (`new Date(deps.clock())` converts a provided value
  * — the dispatch.ts/ingest.ts discipline).
  */
-import { dispatchIntent } from '../application/dispatch.js';
+import { coordinateCommand, type CoordinateDeps } from '../application/coordinatorOrchestrator.js';
+import { dispatchIntent, type DispatchOutcome } from '../application/dispatch.js';
 import { createIngest, type IngestConfig, type IngestOutcome, type TransactionRunner } from '../application/ingest.js';
 import type { ProjectIndex } from '../application/projectIndex.js';
 import type { CreateWorktreeInput } from '../application/worktreeManager.js';
 import { normalizeMessageId } from '../domain/mail.js';
 import { extractCommand } from '../domain/mailContent.js';
 import {
+  composeCoordinatorAnswerReply,
+  composeCoordinatorClarifyReply,
   composeDispatchFailedReply,
   composeDryRunReply,
   composeResultReply,
   scrubText,
   type ReplyContext,
 } from '../domain/replyComposition.js';
+import type { RunCoordinatorTurn } from '../drivers/coordinatorDriver.js';
 import type { AgentDriver } from '../drivers/types.js';
 import type { ClarificationStore } from '../store/clarificationStore.js';
 import type { CommandStore } from '../store/commandStore.js';
+import type { CoordinatorSessionStore } from '../store/coordinatorSessionStore.js';
 import type { IntentStore } from '../store/intentStore.js';
 import type { MetaStore } from '../store/metaStore.js';
 import type { OutboxStore } from '../store/outboxStore.js';
 import type { SessionStore } from '../store/sessionStore.js';
 import type { IncomingMail, MailTransport } from '../transports/types.js';
-import { sendReply, type SendReplyResult } from './replySender.js';
+import { sendReply, type ReplySenderDeps, type SendReplyResult } from './replySender.js';
 
 /** The crash-recovery reason `domain/intentState.ts` locked (exact casing —
  *  a comparable constant, not prose). Exported so the shell batch compares
@@ -187,6 +192,27 @@ export function sweepExpiredClarifications(deps: SweepExpiredDeps): {
 /* Tick dependencies + reports                                         */
 /* ------------------------------------------------------------------ */
 
+/**
+ * ADR-0006 coordinator wiring (batch E-d), OPTIONAL on the tick deps. Absent
+ * ⇒ the daemon runs the pure deterministic router and every existing test
+ * path is unchanged. Present ⇒ a thread-bound mail first gets ONE read-only
+ * coordinator turn (`runCoordinatorForCommand`); only a FAILED turn falls
+ * through to the deterministic router. The store persists the coordinator's
+ * OWN codex thread id per mail thread so the next turn resumes it (ADR-0006's
+ * three-layer mapping); `coordinatorCwd`/`schemaPath`/`coordinatorExtraArgs`
+ * are the fixed per-daemon config the shared `coordinateCommand` needs.
+ */
+export interface CoordinatorTickConfig {
+  runCoordinatorTurn: RunCoordinatorTurn;
+  coordinatorSessionStore: CoordinatorSessionStore;
+  /** Read-only scratch/meta cwd the coordinator codex turn runs in. */
+  coordinatorCwd: string;
+  /** Temp file the decision output-schema was materialized to (assembly). */
+  schemaPath: string;
+  /** MCP-config / resume read-only argv the driver appends, if any. */
+  coordinatorExtraArgs?: readonly string[];
+}
+
 export interface MailTickDeps {
   /** Ingest-family structural transaction face (`ingest.ts`). */
   db: TransactionRunner;
@@ -210,6 +236,11 @@ export interface MailTickDeps {
   mailbox: string;
   ingestConfig: IngestConfig;
   clock(): string;
+  /** ADR-0006 coordinator (batch E-d) — absent ⇒ deterministic router only.
+   *  Rides on `MailTickDeps` so `OrphanTickDeps` (an `Omit` of it) inherits
+   *  it, and both tick entry points feed `dispatchReadyCommand` the same
+   *  optional coordinator. */
+  coordinator?: CoordinatorTickConfig;
 }
 
 /** Orphan recovery needs everything the mail tick needs EXCEPT the
@@ -276,57 +307,81 @@ function finalizePendingIntent(
   deps.intentStore.transition(intentId, 'FAILED', reason, deps.clock());
 }
 
+/** The two tick entry points' shared return shape: whether the driver
+ *  EXECUTED (drove an agent) and the reply's send result (`null` when a
+ *  dedupe/idempotency guard skipped replying). */
+type ReadyReply = { executed: boolean; reply: SendReplyResult | null };
+
 /**
- * One READY command mail, end to end: extract → dispatch → compose →
- * sendReply. Returns whether the driver EXECUTED and the reply's send
- * result (`null` when the stopgap dedupe skipped replying).
- *
- * Exported (D-P5B12-2, review-minor ① of batch 11) so the in-glue
- * alreadyTold double-check can be tested DIRECTLY: both tick entry points
- * shield it (the mail tick via Message-ID dedupe, the orphan tick via its
- * CLARIFICATION_HELD pre-check), so only a direct second call proves this
- * defense-in-depth layer works on its own. Production callers remain the
- * two ticks in this file.
+ * Render one `DispatchOutcome` to a reply and send it. Factored out of
+ * `dispatchReadyCommand` so the ADR-0006 coordinator's `dispatched` branch
+ * reuses the EXACT same outcome→reply mapping the deterministic router uses —
+ * `executeDispatchVerdict` mints the same `DispatchOutcome` either way. A
+ * `clarification-needed` outcome cannot arise on the coordinator path (its
+ * CLARIFY_* verdicts become `clarify` outcomes upstream), but rendering it
+ * here keeps ONE switch for both callers.
  */
-export async function dispatchReadyCommand(
-  deps: OrphanTickDeps,
-  mail: IncomingMail,
+async function dispatchOutcomeToReply(
+  outcome: DispatchOutcome,
+  ctx: ReplyContext,
+  senderDeps: ReplySenderDeps,
   commandId: number,
+  outboxStore: OutboxStore,
+): Promise<ReadyReply> {
+  switch (outcome.kind) {
+    case 'executed': {
+      const reply = composeResultReply(ctx, {
+        verdict: outcome.verdict,
+        terminal: outcome.terminal,
+        events: outcome.events,
+      });
+      return { executed: true, reply: await sendReply(senderDeps, reply) };
+    }
+    case 'dispatch-failed': {
+      const reply = composeDispatchFailedReply(ctx, {
+        stage: outcome.stage,
+        reason: outcome.reason,
+      });
+      return { executed: false, reply: await sendReply(senderDeps, reply) };
+    }
+    case 'skipped-dry-run': {
+      const reply = composeDryRunReply(ctx, outcome.verdict);
+      return { executed: false, reply: await sendReply(senderDeps, reply) };
+    }
+    case 'clarification-needed': {
+      const alreadyTold = outboxStore
+        .findByCommandId(commandId)
+        .some((row) => row.kind === 'ERROR');
+      if (alreadyTold) {
+        return { executed: false, reply: null };
+      }
+      const reason =
+        outcome.verdict.kind === 'CLARIFY_AMBIGUOUS'
+          ? `cannot route: ambiguous (${String(outcome.verdict.candidates.length)} candidates: ` +
+            `${outcome.verdict.candidates.map((candidate) => candidate.name).join(', ')})`
+          : 'cannot route: no match';
+      const reply = composeDispatchFailedReply(ctx, { stage: 'ROUTING', reason });
+      return { executed: false, reply: await sendReply(senderDeps, reply) };
+    }
+  }
+}
+
+/**
+ * The deterministic router path (batch 8/11): extract-guard → `dispatchIntent`
+ * → render. `dispatchReadyCommand` calls this directly when no coordinator is
+ * configured, and the coordinator path falls back to it on a FAILED turn (the
+ * fallback needs the already-extracted command the coordinator layer never
+ * sees). `buildContext` is threaded in (not rebuilt) so the SAME post-dispatch
+ * session view feeds the reply.
+ */
+async function dispatchDeterministic(
+  deps: OrphanTickDeps,
+  extracted: ReturnType<typeof extractCommand>,
+  buildContext: () => ReplyContext,
+  senderDeps: ReplySenderDeps,
   intentId: string,
-): Promise<{ executed: boolean; reply: SendReplyResult | null }> {
-  const subjectRaw = mail.headers.get('subject')?.[0] ?? null;
-  const extracted = extractCommand({
-    subjectRaw,
-    bodyText: mail.bodyText,
-    messageIdNormalized: normalizeMessageId(mail.messageId),
-    references: mail.headers.get('references') ?? [],
-    inReplyTo: mail.headers.get('in-reply-to')?.[0] ?? null,
-  });
-
-  const senderDeps = {
-    db: deps.db,
-    outboxStore: deps.outboxStore,
-    transport: deps.transport,
-    clock: deps.clock,
-  };
-
-  /** Built AFTER dispatch so a DISPATCH_NEW session row (and its recorded
-   *  worktreePath — the scrub needle) is visible; also correct pre-dispatch
-   *  for the extraction arm, where no session can exist yet. */
-  const buildContext = (): ReplyContext => {
-    const session =
-      extracted.threadKey === null
-        ? undefined
-        : deps.sessionStore.findByThreadKey(extracted.threadKey);
-    return {
-      originalSubject: subjectRaw,
-      commandId,
-      intentId,
-      projectName: session === undefined ? null : lastPathSegment(session.projectPath),
-      scrub: { worktreePath: session?.worktreePath ?? null, homeDir: deps.homeDir },
-    };
-  };
-
+  commandId: number,
+): Promise<ReadyReply> {
   if (extracted.threadKey === null || extracted.prompt === null) {
     finalizePendingIntent(deps, intentId, 'EXTRACTION_INCOMPLETE');
     const missing = [
@@ -360,44 +415,178 @@ export async function dispatchReadyCommand(
     },
   );
 
-  const ctx = buildContext();
+  return dispatchOutcomeToReply(outcome, buildContext(), senderDeps, commandId, deps.outboxStore);
+}
 
-  switch (outcome.kind) {
-    case 'executed': {
-      const reply = composeResultReply(ctx, {
-        verdict: outcome.verdict,
-        terminal: outcome.terminal,
-        events: outcome.events,
-      });
-      return { executed: true, reply: await sendReply(senderDeps, reply) };
-    }
-    case 'dispatch-failed': {
-      const reply = composeDispatchFailedReply(ctx, {
-        stage: outcome.stage,
-        reason: outcome.reason,
-      });
+/**
+ * The ADR-0006 coordinator path for ONE thread-bound mail. Returns a settled
+ * reply when the coordinator handled it (`dispatched`/`answer`/`clarify`), or
+ * `null` when the turn FAILED and the caller must run the deterministic
+ * router. On any SUCCEEDED turn that minted a codex thread id, the coordinator
+ * session is persisted (last-write-wins) so the next mail on this thread
+ * resumes the SAME coordinator conversation (ADR-0006 three-layer mapping).
+ *
+ * `answer`/`clarify` ran no agent, so they finalize the intent
+ * PENDING→RESOLVED (the no-agent terminal, `intentState.ts`) BEFORE sending:
+ * a crash between the two leaves a RESOLVED (terminal) intent the orphan tick
+ * never re-scans — a missing reply, never a duplicated action (the crash note
+ * in `intentState.ts`). The `dispatched` branch performs no extra transition;
+ * `executeDispatchVerdict` already drove the intent to its terminal inside
+ * `coordinateCommand`.
+ */
+async function runCoordinatorForCommand(
+  deps: OrphanTickDeps,
+  coordinator: CoordinatorTickConfig,
+  threadKey: string,
+  mailBody: string,
+  commandId: number,
+  intentId: string,
+  buildContext: () => ReplyContext,
+  senderDeps: ReplySenderDeps,
+): Promise<ReadyReply | null> {
+  const dryRun = deps.intentStore.getById(intentId)?.dryRun ?? false;
+  const resumeSessionId =
+    coordinator.coordinatorSessionStore.findByThreadKey(threadKey)?.coordinatorThreadId ?? null;
+
+  const coordDeps: CoordinateDeps = {
+    intentStore: deps.intentStore,
+    sessionStore: deps.sessionStore,
+    index: deps.index,
+    driver: deps.driver,
+    createWorktree: deps.createWorktree,
+    directoryExists: deps.directoryExists,
+    worktreesRoot: deps.worktreesRoot,
+    baseRef: deps.baseRef,
+    clock: deps.clock,
+    runCoordinatorTurn: coordinator.runCoordinatorTurn,
+    coordinatorCwd: coordinator.coordinatorCwd,
+    schemaPath: coordinator.schemaPath,
+    ...(coordinator.coordinatorExtraArgs !== undefined
+      ? { coordinatorExtraArgs: coordinator.coordinatorExtraArgs }
+      : {}),
+  };
+
+  const result = await coordinateCommand(
+    { intentId, threadKey, mailBody, dryRun, resumeSessionId },
+    coordDeps,
+  );
+
+  if (result.kind === 'fell-back') {
+    return null;
+  }
+
+  // Persist the coordinator's codex thread id for the next turn's resume —
+  // only a succeeded turn carries one (last-write-wins per the store doc).
+  if (result.coordinatorSessionId !== null) {
+    coordinator.coordinatorSessionStore.upsert(
+      threadKey,
+      result.coordinatorSessionId,
+      deps.clock(),
+    );
+  }
+
+  switch (result.kind) {
+    case 'dispatched':
+      return dispatchOutcomeToReply(
+        result.outcome,
+        buildContext(),
+        senderDeps,
+        commandId,
+        deps.outboxStore,
+      );
+    case 'answer': {
+      deps.intentStore.transition(intentId, 'RESOLVED', null, deps.clock());
+      const reply = composeCoordinatorAnswerReply(buildContext(), { text: result.text });
       return { executed: false, reply: await sendReply(senderDeps, reply) };
     }
-    case 'skipped-dry-run': {
-      const reply = composeDryRunReply(ctx, outcome.verdict);
-      return { executed: false, reply: await sendReply(senderDeps, reply) };
-    }
-    case 'clarification-needed': {
-      const alreadyTold = deps.outboxStore
-        .findByCommandId(commandId)
-        .some((row) => row.kind === 'ERROR');
-      if (alreadyTold) {
-        return { executed: false, reply: null };
-      }
-      const reason =
-        outcome.verdict.kind === 'CLARIFY_AMBIGUOUS'
-          ? `cannot route: ambiguous (${String(outcome.verdict.candidates.length)} candidates: ` +
-            `${outcome.verdict.candidates.map((candidate) => candidate.name).join(', ')})`
-          : 'cannot route: no match';
-      const reply = composeDispatchFailedReply(ctx, { stage: 'ROUTING', reason });
+    case 'clarify': {
+      deps.intentStore.transition(intentId, 'RESOLVED', null, deps.clock());
+      const reply = composeCoordinatorClarifyReply(buildContext(), {
+        question: result.question,
+        ...(result.options !== undefined ? { options: result.options } : {}),
+      });
       return { executed: false, reply: await sendReply(senderDeps, reply) };
     }
   }
+}
+
+/**
+ * One READY command mail, end to end: extract → dispatch → compose →
+ * sendReply. Returns whether the driver EXECUTED and the reply's send
+ * result (`null` when the stopgap dedupe skipped replying).
+ *
+ * Exported (D-P5B12-2, review-minor ① of batch 11) so the in-glue
+ * alreadyTold double-check can be tested DIRECTLY: both tick entry points
+ * shield it (the mail tick via Message-ID dedupe, the orphan tick via its
+ * CLARIFICATION_HELD pre-check), so only a direct second call proves this
+ * defense-in-depth layer works on its own. Production callers remain the
+ * two ticks in this file.
+ */
+export async function dispatchReadyCommand(
+  deps: OrphanTickDeps,
+  mail: IncomingMail,
+  commandId: number,
+  intentId: string,
+): Promise<ReadyReply> {
+  const subjectRaw = mail.headers.get('subject')?.[0] ?? null;
+  const extracted = extractCommand({
+    subjectRaw,
+    bodyText: mail.bodyText,
+    messageIdNormalized: normalizeMessageId(mail.messageId),
+    references: mail.headers.get('references') ?? [],
+    inReplyTo: mail.headers.get('in-reply-to')?.[0] ?? null,
+  });
+
+  const senderDeps: ReplySenderDeps = {
+    db: deps.db,
+    outboxStore: deps.outboxStore,
+    transport: deps.transport,
+    clock: deps.clock,
+  };
+
+  /** Built AFTER dispatch so a DISPATCH_NEW session row (and its recorded
+   *  worktreePath — the scrub needle) is visible; also correct pre-dispatch
+   *  for the extraction arm, where no session can exist yet. */
+  const buildContext = (): ReplyContext => {
+    const session =
+      extracted.threadKey === null
+        ? undefined
+        : deps.sessionStore.findByThreadKey(extracted.threadKey);
+    return {
+      originalSubject: subjectRaw,
+      commandId,
+      intentId,
+      projectName: session === undefined ? null : lastPathSegment(session.projectPath),
+      scrub: { worktreePath: session?.worktreePath ?? null, homeDir: deps.homeDir },
+    };
+  };
+
+  // ADR-0006 coordinator-first: with a coordinator configured AND a
+  // thread-bound mail, ONE read-only coordinator turn decides the action
+  // (dispatch / answer / clarify). Only a FAILED turn (`null` here) falls
+  // through to the deterministic router below — the coordinator never sees the
+  // raw mail the fallback re-extracts, so that path stays wholly deterministic.
+  // An unthreaded mail (no threadKey) skips the coordinator outright: the
+  // deterministic path fails it closed to an EXTRACTION notice, unchanged.
+  if (deps.coordinator !== undefined && extracted.threadKey !== null) {
+    const handled = await runCoordinatorForCommand(
+      deps,
+      deps.coordinator,
+      extracted.threadKey,
+      // null body ⇒ '' (extractCommand's own treatment, mailContent.ts): the
+      // coordinator receives an empty body, not a literal "null".
+      mail.bodyText ?? '',
+      commandId,
+      intentId,
+      buildContext,
+      senderDeps,
+    );
+    if (handled !== null) {
+      return handled;
+    }
+  }
+
+  return dispatchDeterministic(deps, extracted, buildContext, senderDeps, intentId, commandId);
 }
 
 /* ------------------------------------------------------------------ */
