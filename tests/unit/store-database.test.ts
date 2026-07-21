@@ -22,12 +22,12 @@ function listTables(db: Db): string[] {
 // Guards decision D-P2-9 (SQLite schema v1) and the pragma/migration contract
 // that the rest of the store layer depends on.
 describe('openDatabase (D-P2-9 schema v1)', () => {
-  it('bumps user_version to the latest known migration (6, ADR-0006) on a fresh in-memory database', () => {
+  it('bumps user_version to the latest known migration (7, ADR-0006) on a fresh in-memory database', () => {
     const db = openDatabase(':memory:');
 
     const userVersion = db.pragma('user_version', { simple: true });
 
-    expect(userVersion).toBe(6);
+    expect(userVersion).toBe(7);
     db.close();
   });
 
@@ -90,13 +90,13 @@ describe('openDatabase (D-P2-9 schema v1)', () => {
       rmSync(dir, { recursive: true, force: true });
     });
 
-    it('re-opening is idempotent (user_version stays 6) and journaling is really WAL', () => {
+    it('re-opening is idempotent (user_version stays 7) and journaling is really WAL', () => {
       const first = openDatabase(dbPath);
       first.close();
 
       const second = openDatabase(dbPath);
 
-      expect(second.pragma('user_version', { simple: true })).toBe(6);
+      expect(second.pragma('user_version', { simple: true })).toBe(7);
       expect(second.pragma('journal_mode', { simple: true })).toBe('wal');
       second.close();
     });
@@ -464,10 +464,10 @@ describe('migration 005 (D-P4B8-1 agent_sessions.worktree_path)', () => {
     'updated_at',
   ];
 
-  it('a fresh database reaches the latest user_version (6) with worktree_path present on agent_sessions', () => {
+  it('a fresh database reaches the latest user_version (7) with worktree_path present on agent_sessions', () => {
     const db = openDatabase(':memory:');
 
-    expect(db.pragma('user_version', { simple: true })).toBe(6);
+    expect(db.pragma('user_version', { simple: true })).toBe(7);
 
     const columns = db
       .prepare<[], { name: string }>('PRAGMA table_info(agent_sessions)')
@@ -488,7 +488,7 @@ describe('migration 005 (D-P4B8-1 agent_sessions.worktree_path)', () => {
 
     applyMigrations(db, MIGRATIONS);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(6);
+    expect(db.pragma('user_version', { simple: true })).toBe(7);
     const row = db
       .prepare<[], { thread_key: string; worktree_path: string | null }>(
         `SELECT thread_key, worktree_path FROM agent_sessions WHERE thread_key = 'thread-key-0001'`,
@@ -515,10 +515,10 @@ describe('migration 006 (ADR-0006 thread_key UNIQUE dropped)', () => {
     'updated_at',
   ];
 
-  it('a fresh database reaches user_version 6; agent_sessions keeps its columns + STRICT + project index, and no longer declares UNIQUE', () => {
+  it('a fresh database reaches the latest user_version (7); agent_sessions keeps its columns + STRICT + project index, and no longer declares UNIQUE', () => {
     const db = openDatabase(':memory:');
 
-    expect(db.pragma('user_version', { simple: true })).toBe(6);
+    expect(db.pragma('user_version', { simple: true })).toBe(7);
 
     const columns = db
       .prepare<[], { name: string }>('PRAGMA table_info(agent_sessions)')
@@ -542,7 +542,7 @@ describe('migration 006 (ADR-0006 thread_key UNIQUE dropped)', () => {
     db.close();
   });
 
-  it('a v5 database with a session row migrates to v6, preserves the row verbatim, and now ACCEPTS a duplicate thread_key', () => {
+  it('a v5 database with a session row migrates through v6 to the latest version, preserves the row verbatim, and now ACCEPTS a duplicate thread_key', () => {
     const v5Migrations = MIGRATIONS.filter((migration) => migration.version <= 5);
     const db = openDatabase(':memory:', v5Migrations);
     expect(db.pragma('user_version', { simple: true })).toBe(5);
@@ -553,7 +553,7 @@ describe('migration 006 (ADR-0006 thread_key UNIQUE dropped)', () => {
 
     applyMigrations(db, MIGRATIONS);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(6);
+    expect(db.pragma('user_version', { simple: true })).toBe(7);
     // the pre-existing row survived the table rebuild verbatim (id kept)
     const rows = db
       .prepare<[], { id: number; thread_key: string; worktree_path: string | null }>(
@@ -575,6 +575,61 @@ describe('migration 006 (ADR-0006 thread_key UNIQUE dropped)', () => {
       )
       .get();
     expect(after?.count).toBe(2);
+    db.close();
+  });
+});
+
+// Migration 007 (ADR-0006 coordination) adds coordinator_sessions — the
+// third layer of the three-layer mapping (mail thread ↔ coordinator codex
+// session ↔ execution session). thread_key is the PRIMARY KEY (exactly one
+// coordinator conversation per thread), and the table is additive: agent_sessions
+// is untouched. Fixture discipline: synthetic thread keys only.
+describe('migration 007 (ADR-0006 coordinator_sessions — three-layer mapping)', () => {
+  it('a fresh database reaches the latest user_version (7) with coordinator_sessions present (STRICT, thread_key PRIMARY KEY)', () => {
+    const db = openDatabase(':memory:');
+
+    expect(db.pragma('user_version', { simple: true })).toBe(7);
+
+    const columns = db
+      .prepare<[], { name: string; pk: number }>('PRAGMA table_info(coordinator_sessions)')
+      .all();
+    expect(columns.map((column) => column.name).sort()).toEqual(
+      ['coordinator_thread_id', 'created_at', 'thread_key', 'updated_at'].sort(),
+    );
+    // thread_key is the sole primary key — one coordinator conversation per thread.
+    expect(columns.filter((column) => column.pk > 0).map((column) => column.name)).toEqual([
+      'thread_key',
+    ]);
+
+    const tableSql = db
+      .prepare<[], { sql: string }>(
+        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_sessions'`,
+      )
+      .get();
+    expect(tableSql?.sql).toMatch(/STRICT/i);
+    db.close();
+  });
+
+  it('a v6 database migrates to v7, adding coordinator_sessions without disturbing agent_sessions', () => {
+    const v6Migrations = MIGRATIONS.filter((migration) => migration.version <= 6);
+    const db = openDatabase(':memory:', v6Migrations);
+    expect(db.pragma('user_version', { simple: true })).toBe(6);
+    const beforeTable = db
+      .prepare<[], { name: string }>(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_sessions'`,
+      )
+      .get();
+    expect(beforeTable).toBeUndefined();
+
+    applyMigrations(db, MIGRATIONS);
+
+    expect(db.pragma('user_version', { simple: true })).toBe(7);
+    const afterTable = db
+      .prepare<[], { name: string }>(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_sessions'`,
+      )
+      .get();
+    expect(afterTable?.name).toBe('coordinator_sessions');
     db.close();
   });
 });

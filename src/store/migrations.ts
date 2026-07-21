@@ -146,6 +146,26 @@ ALTER TABLE agent_sessions_new RENAME TO agent_sessions;
 CREATE INDEX idx_agent_sessions_project ON agent_sessions(project_path);
 `;
 
+/**
+ * 007 (ADR-0006 coordination): the missing layer of the three-layer mapping
+ * (mail thread ↔ coordinator codex session ↔ execution session). Persists,
+ * per mail thread, the coordinator's OWN codex thread id so the next turn on
+ * that thread RESUMES the same conversation (ADR-0006: multi-turn coordination
+ * = `codex exec resume <thread_id>`; ADR-0004: that id is stable across
+ * resumes). Exactly one coordinator conversation per thread, so `thread_key`
+ * is the PRIMARY KEY — unlike `agent_sessions`, whose per-execution rows went
+ * multi-per-thread in 006. No foreign key (same rationale as agent_sessions:
+ * a thread outlives any single command/session).
+ */
+const SCHEMA_V7 = `
+CREATE TABLE coordinator_sessions (
+  thread_key TEXT PRIMARY KEY,
+  coordinator_thread_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;
+`;
+
 export interface Migration {
   version: number;
   sql: string;
@@ -158,4 +178,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 4, sql: SCHEMA_V4 },
   { version: 5, sql: SCHEMA_V5 },
   { version: 6, sql: SCHEMA_V6 },
+  { version: 7, sql: SCHEMA_V7 },
 ];
