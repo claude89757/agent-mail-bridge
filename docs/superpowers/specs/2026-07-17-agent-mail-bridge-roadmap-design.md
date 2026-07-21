@@ -58,7 +58,7 @@
 | D2 | MVP agent 范围 | **仅 Codex**，`AgentDriver` 接口先抽象 | 聚焦最小闭环；Claude Code（Agent SDK 成熟）v0.2 紧随。用户已确认 |
 | D3 | handoff 方案 A（Connector 混合复用） | **保留为 P0 非阻塞储备实验**，产出 ADR，不进 MVP 代码 | 用户要求保留技术储备；但依赖 EXPERIMENTAL 接口，不作为主线依赖 |
 | D4 | Codex 驱动接口 | MVP 用 `codex exec --json` + `exec resume`；app-server 驱动放 v0.3+（交互审批场景） | exec 稳定、语义够用；app-server 需锁 schema、维护成本高 |
-| D5 | 路由 controller | v0.1 纯确定性路由 + 邮件澄清，**不调用模型路由** | handoff 已允许该降级；避免"无工具 controller"在 MVP 的实现成本；Phase 4 再评估 |
+| D5 | 路由 controller | ~~v0.1 纯确定性路由 + 邮件澄清，**不调用模型路由**~~ | handoff 已允许该降级；避免"无工具 controller"在 MVP 的实现成本；Phase 4 再评估 —— **注:已被 [ADR-0006](../../adr/0006-conversational-coordination-layer.md) 反转(2026-07-21):用户将邮件对话式交互定为核心,改为门后引入 codex 驱动的只读协调 agent;身份门与执行隔离的确定性安全内核不变** |
 | D6 | 平台 | v0.1 支持 macOS（LaunchAgent）+ Linux（systemd user unit）；Windows 后置 | Node 跨平台成本低；Linux 覆盖 homelab/服务器人群，对开源增长重要 |
 | D7 | 语言 | 代码/主文档英文；README 提供 zh-CN 翻译 | 业界主流开源的必然选择 |
 | D8 | 桌面可见性 | 不承诺邮件任务出现在 Codex 桌面 app 列表 | 已证实的产品限制（独立 session index） |
