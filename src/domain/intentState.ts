@@ -8,15 +8,35 @@
  * `dispatch_intents.status`, mirroring D-P2-2's `commandStore.updateStatus`
  * and D-P2-3's `outboxStore.transition`.
  *
- * COMPLETED, FAILED and SKIPPED_DRY_RUN are all terminal: once a dispatch
- * intent finishes running (however it finishes) or is explicitly skipped
- * because of a dry run, nothing transitions it further. In particular there
- * is deliberately no edge back out of FAILED into PENDING/RUNNING — see the
- * CRASH RECOVERY doc comment below, which is exactly why.
+ * COMPLETED, FAILED, SKIPPED_DRY_RUN and RESOLVED are all terminal: once a
+ * dispatch intent finishes running (however it finishes), is skipped for a dry
+ * run, or is RESOLVED by a coordinator reply that ran no agent, nothing
+ * transitions it further. In particular there is deliberately no edge back out
+ * of FAILED into PENDING/RUNNING — see the CRASH RECOVERY doc comment below,
+ * which is exactly why.
+ *
+ * RESOLVED (ADR-0006 coordination) is the terminal a mail reaches when the
+ * coordinator handles it WITHOUT dispatching an agent — a meta-query `answer`
+ * or a `clarify` question. It is a direct PENDING→RESOLVED edge (no RUNNING:
+ * no agent ran) and is distinct from COMPLETED (an agent dispatch actually
+ * completed) so metrics/observability never conflate "answered a question"
+ * with "ran and finished a task". The coordinator's multi-turn continuity is
+ * codex-thread resume on the NEXT mail (a fresh command + intent), so this
+ * intent is genuinely done — unlike the deterministic C8 clarify, which
+ * lingers PENDING awaiting a token round-trip. NOTE for the daemon (E-d-2):
+ * PENDING→RESOLVED is not crash-atomic with sending the reply, so the
+ * coordinator path MUST guard re-processing idempotently (the outbox
+ * already-replied check), exactly as the deterministic clarify stopgap does.
  */
 import { IllegalTransitionError } from './errors.js';
 
-export type IntentStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'SKIPPED_DRY_RUN';
+export type IntentStatus =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'SKIPPED_DRY_RUN'
+  | 'RESOLVED';
 
 /**
  * CRASH RECOVERY (locked semantics — read this before touching daemon
@@ -47,19 +67,22 @@ export type IntentStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'SKI
  */
 
 /**
- * Legal outgoing edges per status (D-P3P-4). PENDING can either start
- * running or be skipped outright (dry run — the underlying agent task never
- * runs at all); RUNNING can only resolve to COMPLETED or FAILED, never back
- * to PENDING (see the crash-recovery doc comment above). All three terminal
- * statuses have empty edge lists — there is no notion of "terminal" here
- * beyond the map, exactly as in `commandState.ts`/`outboxState.ts`.
+ * Legal outgoing edges per status (D-P3P-4; RESOLVED added for ADR-0006).
+ * PENDING can start running, be skipped outright (dry run — the underlying
+ * agent task never runs at all), or be RESOLVED by a coordinator reply that
+ * ran no agent (answer / clarify); RUNNING can only resolve to COMPLETED or
+ * FAILED, never back to PENDING (see the crash-recovery doc comment above).
+ * All four terminal statuses have empty edge lists — there is no notion of
+ * "terminal" here beyond the map, exactly as in `commandState.ts`/
+ * `outboxState.ts`.
  */
 export const INTENT_TRANSITIONS: Readonly<Record<IntentStatus, readonly IntentStatus[]>> = {
-  PENDING: ['RUNNING', 'SKIPPED_DRY_RUN'],
+  PENDING: ['RUNNING', 'SKIPPED_DRY_RUN', 'RESOLVED'],
   RUNNING: ['COMPLETED', 'FAILED'],
   COMPLETED: [],
   FAILED: [],
   SKIPPED_DRY_RUN: [],
+  RESOLVED: [],
 };
 
 // Derived from INTENT_TRANSITIONS's keys (declared below it to avoid a

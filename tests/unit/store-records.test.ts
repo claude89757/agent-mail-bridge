@@ -1362,6 +1362,7 @@ describe('status-command count surfaces (D-P5B12-5)', () => {
       COMPLETED: 0,
       FAILED: 0,
       SKIPPED_DRY_RUN: 0,
+      RESOLVED: 0,
     });
 
     const first = commandStore.insertIfAbsent(
@@ -1380,6 +1381,7 @@ describe('status-command count surfaces (D-P5B12-5)', () => {
       COMPLETED: 0,
       FAILED: 0,
       SKIPPED_DRY_RUN: 0,
+      RESOLVED: 0,
     });
   });
 

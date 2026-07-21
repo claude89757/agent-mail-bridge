@@ -17,9 +17,16 @@ import {
 // domain-state-machines.test.ts.
 
 describe('intent state machine (D-P3P-4)', () => {
-  it('INTENT_STATUSES contains exactly the five intent statuses', () => {
+  it('INTENT_STATUSES contains exactly the six intent statuses', () => {
     expect(new Set(INTENT_STATUSES)).toEqual(
-      new Set<IntentStatus>(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'SKIPPED_DRY_RUN']),
+      new Set<IntentStatus>([
+        'PENDING',
+        'RUNNING',
+        'COMPLETED',
+        'FAILED',
+        'SKIPPED_DRY_RUN',
+        'RESOLVED',
+      ]),
     );
   });
 
@@ -30,6 +37,10 @@ describe('intent state machine (D-P3P-4)', () => {
 
     it('PENDING -> SKIPPED_DRY_RUN does not throw (dry run never actually dispatches)', () => {
       expect(() => assertIntentTransition('PENDING', 'SKIPPED_DRY_RUN')).not.toThrow();
+    });
+
+    it('PENDING -> RESOLVED does not throw (coordinator answered/clarified without dispatching — ADR-0006)', () => {
+      expect(() => assertIntentTransition('PENDING', 'RESOLVED')).not.toThrow();
     });
 
     it('RUNNING -> COMPLETED does not throw', () => {
@@ -79,6 +90,15 @@ describe('intent state machine (D-P3P-4)', () => {
       );
     });
 
+    it('throws on RUNNING -> RESOLVED (RESOLVED is a no-agent terminal, reachable only straight from PENDING)', () => {
+      expect(() => assertIntentTransition('RUNNING', 'RESOLVED')).toThrow(IllegalTransitionError);
+    });
+
+    it('throws on RESOLVED -> anything (terminal state)', () => {
+      expect(() => assertIntentTransition('RESOLVED', 'RUNNING')).toThrow(IllegalTransitionError);
+      expect(() => assertIntentTransition('RESOLVED', 'PENDING')).toThrow(IllegalTransitionError);
+    });
+
     it('carries machine/from/to fields and the exact "illegal <machine> transition: <from> -> <to>" message', () => {
       let caught: unknown;
       try {
@@ -98,7 +118,7 @@ describe('intent state machine (D-P3P-4)', () => {
 
   // Property test over INTENT_TRANSITIONS as DATA (same shape as the
   // command/outbox sweeps in domain-state-machines.test.ts): for every
-  // (from, to) pair drawn from INTENT_STATUSES (5x5 = 25 pairs), it must
+  // (from, to) pair drawn from INTENT_STATUSES (6x6 = 36 pairs), it must
   // throw an IllegalTransitionError IFF `to` is absent from
   // INTENT_TRANSITIONS[from]. The individual-edge tests above exist for
   // readable failure messages, but this full sweep is what guarantees no
