@@ -225,10 +225,12 @@ export function assembleCappedBody(parts: {
  * nothing upstream notices the difference.
  *
  * 'CLARIFICATION' entered here with ADR-0006 batch E: the conversational
- * coordinator asks the user to disambiguate IN-THREAD — re-reading the
- * whole thread each turn IS the binding, so no C8 token round-trip — and
- * `composeCoordinatorClarifyReply` is that composer. The union now matches
- * `OutboxKind` member-for-member; the re-declaration is kept for the
+ * coordinator asks the user to disambiguate IN-THREAD, and continuity across
+ * turns is codex-thread resume (ADR-0006: the mail thread maps to a persisted
+ * coordinator thread id, resumed each turn — the context lives server-side in
+ * codex, not re-injected here), NOT a C8 token round-trip. So this composer
+ * carries no token; `composeCoordinatorClarifyReply` is it. The union now
+ * matches `OutboxKind` member-for-member; the re-declaration is kept for the
  * import invariant, not for narrowing.
  */
 export type ComposedReplyKind = 'ACK' | 'RESULT' | 'CLARIFICATION' | 'ERROR';
@@ -513,12 +515,13 @@ export function composeCoordinatorAnswerReply(
 
 /**
  * Coordinator clarification (CLARIFICATION): ADR-0006's conversational
- * disambiguation. Binding is the thread itself — the coordinator re-reads
- * the whole thread next turn and sees the user's answer — so, unlike C8's
- * token round-trip, this composer carries no token, just the question and
- * optional short option labels. Options are NAMES only, never paths (the
- * `dryRunPlanLines` CLARIFY precedent), and still ride the scrub funnel.
- * No routing verdict here either, so `metaLines` = null.
+ * disambiguation. Continuity across turns is codex-thread resume (ADR-0006:
+ * the mail thread maps to a persisted coordinator thread id, resumed next
+ * turn so codex still holds the question it asked), NOT a C8 token round-trip
+ * — so this composer carries no token, just the question and optional short
+ * option labels. Options are NAMES only, never paths (the `dryRunPlanLines`
+ * CLARIFY precedent), and still ride the scrub funnel. No routing verdict
+ * here either, so `metaLines` = null.
  */
 export function composeCoordinatorClarifyReply(
   ctx: ReplyContext,
