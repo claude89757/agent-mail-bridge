@@ -93,7 +93,7 @@ import type { AgentDriver, AgentTaskHandle, DriverEvent } from '../drivers/types
 import { routeCommand } from '../domain/routing.js';
 import type { RouteVerdict, RoutingCandidate, RoutingSessionView } from '../domain/routing.js';
 import type { IntentStore } from '../store/intentStore.js';
-import type { SessionStore } from '../store/sessionStore.js';
+import type { SessionStore, SessionSummary } from '../store/sessionStore.js';
 import type { ProjectIndex } from './projectIndex.js';
 import type { CreateWorktreeInput } from './worktreeManager.js';
 
@@ -183,6 +183,46 @@ export async function dispatchIntent(
     return { kind: 'clarification-needed', verdict };
   }
 
+  // Steps 4-9: the shared execution tail. The coordinator layer (ADR-0006,
+  // batch E) reuses it directly with its own resolved verdict + the same
+  // threadKey-fetched session row, so both callers drive ONE committing
+  // pipeline. `existing` is passed through (not re-fetched) so the committing
+  // call sequence is identical whichever caller drives it.
+  return executeDispatchVerdict(verdict, input, intent, existing, deps);
+}
+
+/** The two executable verdicts. Reaching `executeDispatchVerdict` with a
+ *  `DISPATCH_NEW` whose `existing` is non-null is legitimate — it is the
+ *  coordinator's 旧线程换新任务 (a reply on an old thread that kicks off a
+ *  fresh task), which `routeCommand` structurally cannot produce because it
+ *  gives thread continuity absolute priority. The DISPATCH_NEW arm never
+ *  reads `existing`; it always creates a fresh row + tree. */
+type ExecutableVerdict = Extract<RouteVerdict, { kind: 'DISPATCH_NEW' | 'CONTINUE_SESSION' }>;
+
+/**
+ * The execution tail (D-P4B8-3 steps 4-9), factored out of `dispatchIntent`
+ * so BOTH the deterministic router and the coordinator layer (ADR-0006,
+ * batch E) drive the SAME committing pipeline: dry-run short-circuit,
+ * PENDING→RUNNING, DISPATCH_NEW / CONTINUE_SESSION execution, stream
+ * consumption, terminal persistence.
+ *
+ * The caller supplies the EXECUTABLE `verdict`, `intent.dryRun`, and the
+ * ALREADY-fetched `existing` session row (looked up by threadKey upstream,
+ * never model-supplied). The tail performs no `findByThreadKey` of its own,
+ * so the committing call sequence is identical whichever caller drives it.
+ *
+ * PENDING is assumed (the caller checked it — `dispatchIntent` in step 1, the
+ * coordinator orchestrator before it resolves a verdict); step 5's transition
+ * re-asserts PENDING and fails closed on a race regardless. `dispatchIntent`'s
+ * module doc comment remains the normative description of steps 4-9.
+ */
+export async function executeDispatchVerdict(
+  verdict: ExecutableVerdict,
+  input: { readonly intentId: string; readonly threadKey: string; readonly prompt: string },
+  intent: { readonly dryRun: boolean },
+  existing: SessionSummary | undefined,
+  deps: DispatchDeps,
+): Promise<DispatchOutcome> {
   // Step 4: dry-run short-circuits an executable verdict — no session row,
   // no worktree, no driver call.
   if (intent.dryRun) {
@@ -256,9 +296,11 @@ export async function dispatchIntent(
     // Step 7: CONTINUE_SESSION — no new row, no new tree, fail closed on
     // partial-dispatch residue (recovery policy is the daemon batch's).
     if (existing === undefined) {
-      // routeCommand only returns CONTINUE_SESSION when an existing
-      // session view was supplied, and that view came from this very row —
-      // structurally unreachable, kept as a loud guard (fail closed).
+      // routeCommand only returns CONTINUE_SESSION when an existing session
+      // view was supplied, and that view came from this very row; the
+      // coordinator path fails a session-less `continue` closed to a
+      // clarification BEFORE it reaches here (resolveCoordinatorDispatch).
+      // So a CONTINUE_SESSION with no row is always a caller bug: throw.
       throw new Error(
         `dispatchIntent: CONTINUE_SESSION verdict without a session row for thread ` +
           `${input.threadKey} (unexpected)`,

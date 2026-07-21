@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { dispatchIntent } from '../../src/application/dispatch.js';
+import { dispatchIntent, executeDispatchVerdict } from '../../src/application/dispatch.js';
 import type { DispatchDeps, DispatchInput } from '../../src/application/dispatch.js';
 import type { ProjectEntry, ProjectIndex } from '../../src/application/projectIndex.js';
 import type { CreateWorktreeInput } from '../../src/application/worktreeManager.js';
@@ -784,5 +784,107 @@ describe('dispatchIntent (D-P4B8-2/3)', () => {
       kind: 'clarification-needed',
       verdict: { kind: 'CLARIFY_NO_MATCH' },
     });
+  });
+});
+
+// executeDispatchVerdict is the execution tail (steps 4-9) that dispatchIntent
+// now delegates to. The coordinator layer (ADR-0006 batch E) drives it
+// DIRECTLY with a verdict it resolved itself (resolveCoordinatorDispatch) plus
+// the threadKey-fetched session row — never through routeCommand. These pin
+// that reuse (including that the router is never consulted — lookupTerms stays
+// empty); the exhaustive step 4-9 branch coverage stays above (same code).
+describe('executeDispatchVerdict (ADR-0006 batch E — the coordinator reuses the tail)', () => {
+  it('drives DISPATCH_NEW on a clean thread: fresh row + tree + startTask, intent COMPLETED, router never consulted', async () => {
+    const harness = setup();
+
+    const outcome = await executeDispatchVerdict(
+      { kind: 'DISPATCH_NEW', project: { name: 'proj-a', path: PROJECT_PATH } },
+      { intentId: INTENT_ID, threadKey: THREAD_KEY, prompt: PROMPT },
+      { dryRun: false },
+      undefined,
+      harness.deps,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'executed',
+      verdict: 'DISPATCH_NEW',
+      terminal: COMPLETED_EVENT,
+      events: DEFAULT_SEGMENT,
+    });
+    expect(harness.calls).toEqual([
+      'intent.transition:RUNNING',
+      'session.create',
+      'createWorktree',
+      'session.recordWorktreePath',
+      'driver.startTask',
+      'session.recordDriverSessionId',
+      'intent.transition:COMPLETED',
+    ]);
+    // the tail did NOT re-derive the verdict — no index lookup happened here
+    expect(harness.lookupTerms).toEqual([]);
+    expect(harness.intentStore.getById(INTENT_ID)?.status).toBe('COMPLETED');
+  });
+
+  it('drives CONTINUE_SESSION from a caller-supplied verdict + existing row: resumeTask, no new row/tree', async () => {
+    const harness = setup({
+      existingSession: {
+        driverSessionId: DRIVER_SESSION_ID,
+        worktreePath: SEEDED_WORKTREE_PATH,
+      },
+    });
+    const existing = harness.sessionStore.findByThreadKey(THREAD_KEY);
+
+    const outcome = await executeDispatchVerdict(
+      {
+        kind: 'CONTINUE_SESSION',
+        session: { projectPath: PROJECT_PATH, driverSessionId: DRIVER_SESSION_ID },
+      },
+      { intentId: INTENT_ID, threadKey: THREAD_KEY, prompt: PROMPT },
+      { dryRun: false },
+      existing,
+      harness.deps,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'executed',
+      verdict: 'CONTINUE_SESSION',
+      terminal: COMPLETED_EVENT,
+      events: [AGENT_MESSAGE, TOOL_ACTIVITY, COMPLETED_EVENT],
+    });
+    expect(harness.fake!.resumeTaskCalls).toEqual([
+      {
+        sessionId: DRIVER_SESSION_ID,
+        input: { prompt: PROMPT, cwd: SEEDED_WORKTREE_PATH, dryRun: false },
+      },
+    ]);
+    expect(harness.directoryExistsCalls).toEqual([SEEDED_WORKTREE_PATH]);
+    expect(harness.createWorktreeCalls).toEqual([]);
+    expect(harness.lookupTerms).toEqual([]);
+    expect(harness.calls).toEqual([
+      'intent.transition:RUNNING',
+      'driver.resumeTask',
+      'intent.transition:COMPLETED',
+    ]);
+    expect(harness.intentStore.getById(INTENT_ID)?.status).toBe('COMPLETED');
+  });
+
+  it('honors dry-run without consulting the router: SKIPPED_DRY_RUN, zero session/worktree/driver', async () => {
+    const harness = setup({ dryRun: true });
+
+    const outcome = await executeDispatchVerdict(
+      { kind: 'DISPATCH_NEW', project: { name: 'proj-a', path: PROJECT_PATH } },
+      { intentId: INTENT_ID, threadKey: THREAD_KEY, prompt: PROMPT },
+      { dryRun: true },
+      undefined,
+      harness.deps,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'skipped-dry-run',
+      verdict: { kind: 'DISPATCH_NEW', project: { name: 'proj-a', path: PROJECT_PATH } },
+    });
+    expect(harness.calls).toEqual(['intent.transition:SKIPPED_DRY_RUN']);
+    expect(harness.lookupTerms).toEqual([]);
+    expect(harness.intentStore.getById(INTENT_ID)?.status).toBe('SKIPPED_DRY_RUN');
   });
 });
