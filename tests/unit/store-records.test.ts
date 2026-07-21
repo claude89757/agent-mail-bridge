@@ -1094,16 +1094,19 @@ describe('SessionStore (D-P4B7-2)', () => {
     expect(store.findByThreadKey('no-such-thread')).toBeUndefined();
   });
 
-  it('create with a duplicate thread_key throws (UNIQUE — re-creating a mapped thread is an upstream bug, fail closed) and leaves the first row untouched', () => {
+  it('create on a thread that already has a session APPENDS a new row (migration 006 dropped UNIQUE — the coordinator 旧线程换新任务); findByThreadKey returns the LATEST', () => {
     const first = store.create(sessionInput());
+    const second = store.create(
+      sessionInput({ projectPath: '/tmp/fixtures/proj-b', now: '2026-07-19T00:05:00.000Z' }),
+    );
 
-    expect(() =>
-      store.create(
-        sessionInput({ projectPath: '/tmp/fixtures/proj-b', now: '2026-07-19T00:05:00.000Z' }),
-      ),
-    ).toThrow();
+    // both rows persisted as DISTINCT sessions — never merged or overwritten
+    expect(second.id).not.toBe(first.id);
+    expect(store.listByProject(first.projectPath)).toEqual([first]);
+    expect(store.listByProject(second.projectPath)).toEqual([second]);
 
-    expect(store.findByThreadKey('thread-key-0001')).toEqual(first);
+    // "the thread's session" is now its latest row (ORDER BY id DESC)
+    expect(store.findByThreadKey('thread-key-0001')).toEqual(second);
   });
 
   it('agent_sessions declares NO foreign key (a session spans many commands over its thread — pinned so a future FK to commands is a deliberate schema decision, not drift)', () => {

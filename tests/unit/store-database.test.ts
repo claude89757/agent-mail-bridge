@@ -22,12 +22,12 @@ function listTables(db: Db): string[] {
 // Guards decision D-P2-9 (SQLite schema v1) and the pragma/migration contract
 // that the rest of the store layer depends on.
 describe('openDatabase (D-P2-9 schema v1)', () => {
-  it('bumps user_version to the latest known migration (5, D-P4B8-1) on a fresh in-memory database', () => {
+  it('bumps user_version to the latest known migration (6, ADR-0006) on a fresh in-memory database', () => {
     const db = openDatabase(':memory:');
 
     const userVersion = db.pragma('user_version', { simple: true });
 
-    expect(userVersion).toBe(5);
+    expect(userVersion).toBe(6);
     db.close();
   });
 
@@ -90,13 +90,13 @@ describe('openDatabase (D-P2-9 schema v1)', () => {
       rmSync(dir, { recursive: true, force: true });
     });
 
-    it('re-opening is idempotent (user_version stays 5) and journaling is really WAL', () => {
+    it('re-opening is idempotent (user_version stays 6) and journaling is really WAL', () => {
       const first = openDatabase(dbPath);
       first.close();
 
       const second = openDatabase(dbPath);
 
-      expect(second.pragma('user_version', { simple: true })).toBe(5);
+      expect(second.pragma('user_version', { simple: true })).toBe(6);
       expect(second.pragma('journal_mode', { simple: true })).toBe('wal');
       second.close();
     });
@@ -464,10 +464,10 @@ describe('migration 005 (D-P4B8-1 agent_sessions.worktree_path)', () => {
     'updated_at',
   ];
 
-  it('a fresh database goes straight to user_version 5 with worktree_path present on agent_sessions', () => {
+  it('a fresh database reaches the latest user_version (6) with worktree_path present on agent_sessions', () => {
     const db = openDatabase(':memory:');
 
-    expect(db.pragma('user_version', { simple: true })).toBe(5);
+    expect(db.pragma('user_version', { simple: true })).toBe(6);
 
     const columns = db
       .prepare<[], { name: string }>('PRAGMA table_info(agent_sessions)')
@@ -477,7 +477,7 @@ describe('migration 005 (D-P4B8-1 agent_sessions.worktree_path)', () => {
     db.close();
   });
 
-  it('a v4 database with an existing session row migrates to v5 and that row reads worktree_path NULL (no backfill)', () => {
+  it('a v4 database with an existing session row migrates to the latest version and that row reads worktree_path NULL (no backfill, survives the 006 rebuild)', () => {
     const v4Migrations = MIGRATIONS.filter((migration) => migration.version <= 4);
     const db = openDatabase(':memory:', v4Migrations);
     expect(db.pragma('user_version', { simple: true })).toBe(4);
@@ -488,13 +488,93 @@ describe('migration 005 (D-P4B8-1 agent_sessions.worktree_path)', () => {
 
     applyMigrations(db, MIGRATIONS);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(5);
+    expect(db.pragma('user_version', { simple: true })).toBe(6);
     const row = db
       .prepare<[], { thread_key: string; worktree_path: string | null }>(
         `SELECT thread_key, worktree_path FROM agent_sessions WHERE thread_key = 'thread-key-0001'`,
       )
       .get();
     expect(row).toEqual({ thread_key: 'thread-key-0001', worktree_path: null });
+    db.close();
+  });
+});
+
+// Migration 006 (ADR-0006 coordination) rebuilds agent_sessions to drop
+// thread_key's UNIQUE, so one mail thread can carry multiple sessions
+// (旧线程换新任务). The rebuild must preserve the column set, STRICT-ness,
+// the project index, and every existing row verbatim — only the constraint
+// goes. Fixture discipline: synthetic /tmp/fixtures/* paths, low-entropy ids.
+describe('migration 006 (ADR-0006 thread_key UNIQUE dropped)', () => {
+  const SESSION_COLUMNS_V6 = [
+    'id',
+    'thread_key',
+    'project_path',
+    'driver_session_id',
+    'worktree_path',
+    'created_at',
+    'updated_at',
+  ];
+
+  it('a fresh database reaches user_version 6; agent_sessions keeps its columns + STRICT + project index, and no longer declares UNIQUE', () => {
+    const db = openDatabase(':memory:');
+
+    expect(db.pragma('user_version', { simple: true })).toBe(6);
+
+    const columns = db
+      .prepare<[], { name: string }>('PRAGMA table_info(agent_sessions)')
+      .all()
+      .map((row) => row.name);
+    expect(columns.sort()).toEqual([...SESSION_COLUMNS_V6].sort());
+
+    const tableSql = db
+      .prepare<[], { sql: string }>(
+        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_sessions'`,
+      )
+      .get();
+    expect(tableSql?.sql).toMatch(/STRICT/i);
+    expect(tableSql?.sql).not.toMatch(/UNIQUE/i);
+
+    const indexes = db
+      .prepare<[], { name: string }>(`PRAGMA index_list(agent_sessions)`)
+      .all()
+      .map((row) => row.name);
+    expect(indexes).toContain('idx_agent_sessions_project');
+    db.close();
+  });
+
+  it('a v5 database with a session row migrates to v6, preserves the row verbatim, and now ACCEPTS a duplicate thread_key', () => {
+    const v5Migrations = MIGRATIONS.filter((migration) => migration.version <= 5);
+    const db = openDatabase(':memory:', v5Migrations);
+    expect(db.pragma('user_version', { simple: true })).toBe(5);
+    db.prepare(
+      `INSERT INTO agent_sessions (thread_key, project_path, driver_session_id, created_at, updated_at, worktree_path)
+       VALUES ('thread-key-0001', '/tmp/fixtures/proj-a', 'drv-0001', '2026-07-19T00:00:00.000Z', '2026-07-19T00:00:00.000Z', '/tmp/fixtures/wt-1')`,
+    ).run();
+
+    applyMigrations(db, MIGRATIONS);
+
+    expect(db.pragma('user_version', { simple: true })).toBe(6);
+    // the pre-existing row survived the table rebuild verbatim (id kept)
+    const rows = db
+      .prepare<[], { id: number; thread_key: string; worktree_path: string | null }>(
+        `SELECT id, thread_key, worktree_path FROM agent_sessions WHERE thread_key = 'thread-key-0001' ORDER BY id`,
+      )
+      .all();
+    expect(rows).toEqual([
+      { id: 1, thread_key: 'thread-key-0001', worktree_path: '/tmp/fixtures/wt-1' },
+    ]);
+
+    // the UNIQUE is gone: a second row on the same thread inserts cleanly
+    db.prepare(
+      `INSERT INTO agent_sessions (thread_key, project_path, driver_session_id, created_at, updated_at, worktree_path)
+       VALUES ('thread-key-0001', '/tmp/fixtures/proj-b', NULL, '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z', NULL)`,
+    ).run();
+    const after = db
+      .prepare<[], { count: number }>(
+        `SELECT COUNT(*) AS count FROM agent_sessions WHERE thread_key = 'thread-key-0001'`,
+      )
+      .get();
+    expect(after?.count).toBe(2);
     db.close();
   });
 });

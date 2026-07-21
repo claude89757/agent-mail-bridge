@@ -108,16 +108,21 @@ export class SessionStore {
 
   /**
    * Inserts a fresh mapping with `driver_session_id` NULL (the session
-   * exists before `thread.started` — see the module doc comment). A
-   * `thread_key` collision throws (SQLite UNIQUE violation propagates
-   * untouched): the router only calls `create` after `findByThreadKey`
-   * returned nothing, so a duplicate create for the same thread is an
-   * upstream bug — fail closed, never merge or overwrite.
+   * exists before `thread.started` — see the module doc comment). A second
+   * `create` on a thread that already has a session is ALLOWED and APPENDS a
+   * new row (migration 006 dropped `thread_key`'s UNIQUE): that is the
+   * coordinator's 旧线程换新任务 — a reply on an old thread that kicks off a
+   * fresh task. The deterministic router never does this (thread continuity
+   * makes it continue the existing session); only
+   * `resolveCoordinatorDispatch`'s `new` mode reaches here with an existing
+   * row.
    *
-   * Re-selects the inserted row by `threadKey` (UNIQUE NOT NULL) rather
-   * than trusting `RunResult.lastInsertRowid`, mirroring
-   * `commandStore.insertIfAbsent` / `clarificationStore.create`'s "insert
-   * then re-select by the row's own unique business key" technique.
+   * Re-selects the inserted row via `getRowByThreadKey` (now `ORDER BY id
+   * DESC LIMIT 1`) rather than trusting `RunResult.lastInsertRowid`: the row
+   * just inserted carries the largest id, so it is precisely what the
+   * latest-row lookup returns — the same "insert then re-select by the row's
+   * own business key" technique as `commandStore.insertIfAbsent`, still
+   * correct now that the key is no longer unique.
    */
   create(input: SessionCreateInput): SessionSummary {
     this.db
@@ -235,10 +240,17 @@ export class SessionStore {
       .get(id);
   }
 
+  /**
+   * The thread's CURRENT session = its LATEST row. Since migration 006
+   * dropped `thread_key`'s UNIQUE, a thread may carry several rows (the
+   * coordinator's 旧线程换新任务); `ORDER BY id DESC LIMIT 1` returns the
+   * newest. `create`'s post-insert re-select relies on this too: the row it
+   * just inserted carries the largest id, so it is exactly what comes back.
+   */
   private getRowByThreadKey(threadKey: string): SessionRow | undefined {
     return this.db
       .prepare<[string], SessionRow>(
-        `SELECT ${SELECT_COLUMNS} FROM agent_sessions WHERE thread_key = ?`,
+        `SELECT ${SELECT_COLUMNS} FROM agent_sessions WHERE thread_key = ? ORDER BY id DESC LIMIT 1`,
       )
       .get(threadKey);
   }

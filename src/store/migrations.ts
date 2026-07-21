@@ -116,6 +116,36 @@ const SCHEMA_V5 = `
 ALTER TABLE agent_sessions ADD COLUMN worktree_path TEXT;
 `;
 
+/**
+ * 006 (ADR-0006 coordination): drop `thread_key`'s UNIQUE constraint so ONE
+ * mail thread can carry MORE THAN ONE agent session — the coordinator's
+ * 旧线程换新任务 (a reply on an old thread that kicks off a fresh task,
+ * `resolveCoordinatorDispatch`'s `new` mode). SQLite cannot drop an inline
+ * column constraint, so the table is rebuilt WITHOUT `UNIQUE`. `agent_sessions`
+ * has no foreign keys (pinned by store-records.test.ts) and the runner wraps
+ * every migration in one transaction, so this create-copy-drop-rename is
+ * atomic and safe. Column set / physical order / STRICT-ness / the project
+ * index are preserved verbatim — only the constraint is gone. `sessionStore`'s
+ * lookup gains `ORDER BY id DESC` so "the thread's session" now means its
+ * LATEST row.
+ */
+const SCHEMA_V6 = `
+CREATE TABLE agent_sessions_new (
+  id INTEGER PRIMARY KEY,
+  thread_key TEXT NOT NULL,
+  project_path TEXT NOT NULL,
+  driver_session_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  worktree_path TEXT
+) STRICT;
+INSERT INTO agent_sessions_new (id, thread_key, project_path, driver_session_id, created_at, updated_at, worktree_path)
+  SELECT id, thread_key, project_path, driver_session_id, created_at, updated_at, worktree_path FROM agent_sessions;
+DROP TABLE agent_sessions;
+ALTER TABLE agent_sessions_new RENAME TO agent_sessions;
+CREATE INDEX idx_agent_sessions_project ON agent_sessions(project_path);
+`;
+
 export interface Migration {
   version: number;
   sql: string;
@@ -127,4 +157,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 3, sql: SCHEMA_V3 },
   { version: 4, sql: SCHEMA_V4 },
   { version: 5, sql: SCHEMA_V5 },
+  { version: 6, sql: SCHEMA_V6 },
 ];
