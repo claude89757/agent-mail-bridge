@@ -218,6 +218,17 @@ export class SessionStore {
     return rows.map(rowToSummary);
   }
 
+  /** Every session, ordered by id (creation order) — the coordinator's
+   * `list_sessions` read tool source (ADR-0006). Redaction to a path-free
+   * view is the caller's job (`application/coordinatorTools.ts`); this
+   * returns raw summaries verbatim. */
+  listAll(): SessionSummary[] {
+    const rows = this.db
+      .prepare<[], SessionRow>(`SELECT ${SELECT_COLUMNS} FROM agent_sessions ORDER BY id`)
+      .all();
+    return rows.map(rowToSummary);
+  }
+
   private getRowById(id: number): SessionRow | undefined {
     return this.db
       .prepare<[number], SessionRow>(`SELECT ${SELECT_COLUMNS} FROM agent_sessions WHERE id = ?`)
