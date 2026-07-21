@@ -41,7 +41,7 @@
  */
 import { homedir } from 'node:os';
 
-import { parseCoordinatorDecision, type CoordinatorDecision } from '../domain/coordinatorDecision.js';
+import { parseCoordinatorDecisionEnvelope, type CoordinatorDecision } from '../domain/coordinatorDecision.js';
 import type { SpawnCodex } from './codexDriver.js';
 
 // ---------------------------------------------------------------------------
@@ -83,6 +83,27 @@ export type RunCoordinatorTurn = (input: CoordinatorRunInput) => Promise<Coordin
  *  writes. Exported so the argv-discipline is assertable and the wiring layer
  *  can reuse the same literal for the resume config override. */
 export const COORDINATOR_SANDBOX_MODE = 'read-only';
+
+/**
+ * Fixed exec flags every coordination turn carries (batch-D spike, ADR-0007):
+ *   - `--skip-git-repo-check`: the coordinator cwd is a meta/scratch dir, not
+ *     a git repo, which codex otherwise refuses to run in;
+ *   - `--ignore-user-config`: run against a clean config — do NOT inherit the
+ *     operator's global `~/.codex/config.toml` (its `approvals_reviewer` and
+ *     unrelated MCP servers otherwise leak in as approval routing / noise);
+ *     auth still resolves from `CODEX_HOME`, so no credential is touched;
+ *   - `-c approval_policy="never"`: headless, so never block on an approval
+ *     prompt (execution failures return to the model instead).
+ * Under the prompt-injection context model (ADR-0007) the coordinator calls
+ * NO tools, so these only make the run headless and isolated — they never
+ * relax the sandbox; `--sandbox read-only` still stands on the new-turn path.
+ */
+export const COORDINATOR_ISOLATION_ARGS: readonly string[] = [
+  '--skip-git-repo-check',
+  '--ignore-user-config',
+  '-c',
+  'approval_policy="never"',
+];
 
 /**
  * The one shape codex mints for `thread.started.thread_id` (ADR-0004): a
@@ -188,15 +209,29 @@ function buildArgv(input: CoordinatorRunInput): readonly string[] {
           '(argv-injection guard — ADR-0004)',
       );
     }
-    // `exec resume` does not accept `--sandbox` (codex 0.144.6); the read-only
-    // enforcement rides on `extraArgs` config the wiring layer resolves.
-    return ['exec', 'resume', input.resumeSessionId, '--json', ...extra, '--output-schema', input.schemaPath, input.prompt];
+    // `exec resume` does not accept `--sandbox` (codex 0.144.6). The read-only
+    // enforcement for the resume path must ride on config, whose exact key is
+    // still to be pinned by a resume-specific spike (batch E/F) — until then
+    // the wiring layer supplies it via `extraArgs`, and multi-turn resume stays
+    // gated on that spike. (The new-turn path below is fully spike-verified.)
+    return [
+      'exec',
+      'resume',
+      input.resumeSessionId,
+      '--json',
+      ...COORDINATOR_ISOLATION_ARGS,
+      ...extra,
+      '--output-schema',
+      input.schemaPath,
+      input.prompt,
+    ];
   }
   return [
     'exec',
     '--json',
     '--sandbox',
     COORDINATOR_SANDBOX_MODE,
+    ...COORDINATOR_ISOLATION_ARGS,
     '-C',
     input.cwd,
     ...extra,
@@ -270,13 +305,15 @@ export function createCoordinatorDriver(deps: { spawnCodex: SpawnCodex }): RunCo
       return { kind: 'failed', reason: 'coordinator completed its turn without a final message' };
     }
 
-    let rawDecision: unknown;
+    let rawEnvelope: unknown;
     try {
-      rawDecision = JSON.parse(lastAgentMessageText);
+      rawEnvelope = JSON.parse(lastAgentMessageText);
     } catch {
       return { kind: 'failed', reason: 'coordinator final message was not valid JSON' };
     }
-    const parsed = parseCoordinatorDecision(rawDecision);
+    // The final message is the `{"decision": {...}}` envelope (ADR-0007);
+    // unwrap + re-validate, failing closed to the deterministic router.
+    const parsed = parseCoordinatorDecisionEnvelope(rawEnvelope);
     if (!parsed.ok) {
       return { kind: 'failed', reason: `coordinator decision invalid: ${parsed.error}` };
     }

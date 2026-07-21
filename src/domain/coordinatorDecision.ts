@@ -60,46 +60,67 @@ export type ParseCoordinatorDecisionResult =
 
 /**
  * JSON Schema fed to `codex exec --output-schema` to shape the coordinator
- * run's final response. Three branches, one per decision kind, each locked
- * to `additionalProperties: false` so the model cannot smuggle extra
- * fields. NOTE: the exact on-the-wire form codex/its provider accepts
- * (strict-mode quirks around root-level `oneOf`) is pinned by the batch-D
- * carrier spike; `parseCoordinatorDecision` is the real safety boundary
- * and does not depend on the model perfectly honoring this schema.
+ * run's final response. Its exact shape was pinned by the batch-D carrier
+ * spike against the real provider (ADR-0007), which rejected the naive
+ * root-level union:
+ *
+ *   - the root MUST be `type: object` — a root-level `oneOf`/`anyOf` returns
+ *     `400 invalid_json_schema` — so the actual decision is nested under a
+ *     single `decision` property (the `{"decision": {...}}` ENVELOPE; unwrap
+ *     with `parseCoordinatorDecisionEnvelope`);
+ *   - the union uses `anyOf`, not `oneOf` (the provider does not permit
+ *     `oneOf`);
+ *   - every object is strict: `additionalProperties: false` and EVERY
+ *     property listed in `required` (structured-output strict mode) — so the
+ *     optional `clarify.options` becomes required-but-nullable
+ *     (`type: ["array","null"]`), not an absent key;
+ *   - no `minLength` (kept out of the wire schema; non-emptiness is
+ *     re-checked by the parser below).
+ *
+ * `parseCoordinatorDecision` remains the real safety boundary: it re-validates
+ * independently and does not depend on the model perfectly honoring this
+ * schema.
  */
 export const COORDINATOR_DECISION_SCHEMA = {
-  oneOf: [
-    {
-      type: 'object',
-      properties: {
-        kind: { const: 'dispatch' },
-        projectAlias: { type: 'string', minLength: 1 },
-        prompt: { type: 'string', minLength: 1 },
-        mode: { enum: ['new', 'continue'] },
-      },
-      required: ['kind', 'projectAlias', 'prompt', 'mode'],
-      additionalProperties: false,
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    decision: {
+      anyOf: [
+        {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kind: { type: 'string', enum: ['dispatch'] },
+            projectAlias: { type: 'string' },
+            prompt: { type: 'string' },
+            mode: { type: 'string', enum: ['new', 'continue'] },
+          },
+          required: ['kind', 'projectAlias', 'prompt', 'mode'],
+        },
+        {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kind: { type: 'string', enum: ['clarify'] },
+            question: { type: 'string' },
+            options: { type: ['array', 'null'], items: { type: 'string' } },
+          },
+          required: ['kind', 'question', 'options'],
+        },
+        {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kind: { type: 'string', enum: ['answer'] },
+            text: { type: 'string' },
+          },
+          required: ['kind', 'text'],
+        },
+      ],
     },
-    {
-      type: 'object',
-      properties: {
-        kind: { const: 'clarify' },
-        question: { type: 'string', minLength: 1 },
-        options: { type: 'array', items: { type: 'string' } },
-      },
-      required: ['kind', 'question'],
-      additionalProperties: false,
-    },
-    {
-      type: 'object',
-      properties: {
-        kind: { const: 'answer' },
-        text: { type: 'string', minLength: 1 },
-      },
-      required: ['kind', 'text'],
-      additionalProperties: false,
-    },
-  ],
+  },
+  required: ['decision'],
 } as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -137,7 +158,9 @@ function parseClarify(raw: Record<string, unknown>): ParseCoordinatorDecisionRes
     return fail('clarify.question must be a non-empty string');
   }
   const options = raw.options;
-  if (options === undefined) {
+  // `null` is how the wire schema encodes "no options" (options is
+  // required-but-nullable — ADR-0007); treat it identically to absent.
+  if (options === undefined || options === null) {
     return { ok: true, decision: { kind: 'clarify', question: raw.question } };
   }
   if (!Array.isArray(options)) {
@@ -181,4 +204,24 @@ export function parseCoordinatorDecision(raw: unknown): ParseCoordinatorDecision
     default:
       return fail(`decision.kind must be one of dispatch|clarify|answer, got ${JSON.stringify(kind)}`);
   }
+}
+
+/**
+ * Unwraps codex's `{"decision": {...}}` ENVELOPE, then validates the inner
+ * decision via `parseCoordinatorDecision`. The envelope exists ONLY because
+ * `--output-schema` requires a root object (ADR-0007): codex's final
+ * `agent_message` is this wrapper, and the coordinator driver hands its
+ * JSON-parsed form here. Fails closed exactly like the inner parser — a
+ * non-object input, or a missing / non-object `decision`, clarifies nothing;
+ * it returns `{ ok: false }` and the caller falls back to the deterministic
+ * router.
+ */
+export function parseCoordinatorDecisionEnvelope(raw: unknown): ParseCoordinatorDecisionResult {
+  if (!isRecord(raw)) {
+    return fail('coordinator output must be a JSON object');
+  }
+  if (!('decision' in raw)) {
+    return fail('coordinator output missing "decision" envelope field');
+  }
+  return parseCoordinatorDecision(raw.decision);
 }

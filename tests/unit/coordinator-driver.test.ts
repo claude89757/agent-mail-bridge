@@ -42,6 +42,13 @@ function completedTurn(finalText: string, sessionId = VALID_SESSION_ID): string[
   ];
 }
 
+/** Wraps a decision in the `{"decision": {...}}` envelope codex emits under
+ *  `--output-schema` (ADR-0007) — the shape the driver unwraps. Returned as a
+ *  JSON string, ready to be the agent_message text. */
+function envelope(decision: unknown): string {
+  return line({ decision });
+}
+
 /** Builds a fake SpawnCodex over a scripted process, recording the argv/cwd
  *  it was called with so argv-discipline can be asserted. */
 function fakeDriver(script: {
@@ -75,7 +82,7 @@ describe('createCoordinatorDriver (ADR-0006, coordination batch C)', () => {
   describe('happy path — a valid final message becomes a decision', () => {
     it('parses a dispatch decision and returns the captured session id', async () => {
       const { run } = fakeDriver({
-        stdout: completedTurn(line({ kind: 'dispatch', projectAlias: 'blog', prompt: 'ship it', mode: 'new' })),
+        stdout: completedTurn(envelope({ kind: 'dispatch', projectAlias: 'blog', prompt: 'ship it', mode: 'new' })),
       });
       const outcome = await run(NEW_INPUT);
       expect(outcome).toEqual({
@@ -87,7 +94,7 @@ describe('createCoordinatorDriver (ADR-0006, coordination batch C)', () => {
 
     it('parses a clarify decision (read-only, no execution)', async () => {
       const { run } = fakeDriver({
-        stdout: completedTurn(line({ kind: 'clarify', question: 'which project?', options: ['blog', 'api'] })),
+        stdout: completedTurn(envelope({ kind: 'clarify', question: 'which project?', options: ['blog', 'api'] })),
       });
       const outcome = await run(NEW_INPUT);
       expect(outcome).toEqual({
@@ -99,7 +106,7 @@ describe('createCoordinatorDriver (ADR-0006, coordination batch C)', () => {
 
     it('parses an answer decision (meta-query reply)', async () => {
       const { run } = fakeDriver({
-        stdout: completedTurn(line({ kind: 'answer', text: 'you have 2 projects: blog, api' })),
+        stdout: completedTurn(envelope({ kind: 'answer', text: 'you have 2 projects: blog, api' })),
       });
       const outcome = await run(NEW_INPUT);
       expect(outcome).toEqual({
@@ -111,8 +118,8 @@ describe('createCoordinatorDriver (ADR-0006, coordination batch C)', () => {
   });
 
   describe('argv discipline (the security-load-bearing part)', () => {
-    it('runs read-only, passes --output-schema, and never emits a dangerous or write flag', async () => {
-      const { run, calls } = fakeDriver({ stdout: completedTurn(line({ kind: 'answer', text: 'ok' })) });
+    it('runs read-only + headless-isolated, passes --output-schema, never a dangerous or write flag', async () => {
+      const { run, calls } = fakeDriver({ stdout: completedTurn(envelope({ kind: 'answer', text: 'ok' })) });
       await run(NEW_INPUT);
       const argv = calls[0]?.argv ?? [];
       // read-only sandbox, positively asserted for the new-turn path
@@ -120,6 +127,13 @@ describe('createCoordinatorDriver (ADR-0006, coordination batch C)', () => {
       expect(sandboxIdx).toBeGreaterThanOrEqual(0);
       expect(argv[sandboxIdx + 1]).toBe(COORDINATOR_SANDBOX_MODE);
       expect(COORDINATOR_SANDBOX_MODE).toBe('read-only');
+      // headless isolation (batch-D spike, ADR-0007): non-git cwd, clean config,
+      // no interactive approval — none of these relax the sandbox
+      expect(argv).toContain('--skip-git-repo-check');
+      expect(argv).toContain('--ignore-user-config');
+      const approvalIdx = argv.indexOf('approval_policy="never"');
+      expect(approvalIdx).toBeGreaterThan(0);
+      expect(argv[approvalIdx - 1]).toBe('-c');
       // structured output schema present, pointing at the caller's file
       const schemaIdx = argv.indexOf('--output-schema');
       expect(schemaIdx).toBeGreaterThanOrEqual(0);
@@ -134,25 +148,28 @@ describe('createCoordinatorDriver (ADR-0006, coordination batch C)', () => {
       expect(calls[0]?.cwd).toBe(CWD);
     });
 
-    it('injects extraArgs (the MCP config the wiring layer resolves) ahead of the prompt', async () => {
-      const extraArgs = ['-c', 'mcp_servers.amb-coordinator.command=amb'];
-      const { run, calls } = fakeDriver({ stdout: completedTurn(line({ kind: 'answer', text: 'ok' })) });
+    it('injects extraArgs ahead of the prompt (a generic seam — MCP config rides here if re-added)', async () => {
+      const extraArgs = ['-c', 'model_reasoning_effort="low"'];
+      const { run, calls } = fakeDriver({ stdout: completedTurn(envelope({ kind: 'answer', text: 'ok' })) });
       await run({ ...NEW_INPUT, extraArgs });
       const argv = calls[0]?.argv ?? [];
-      expect(argv).toContain('-c');
-      expect(argv).toContain('mcp_servers.amb-coordinator.command=amb');
+      expect(argv).toContain('model_reasoning_effort="low"');
       // still before the trailing prompt
-      expect(argv.indexOf('mcp_servers.amb-coordinator.command=amb')).toBeLessThan(argv.length - 1);
+      expect(argv.indexOf('model_reasoning_effort="low"')).toBeLessThan(argv.length - 1);
     });
 
     it('resumes via `exec resume <id>` WITHOUT a --sandbox flag (codex 0.144.6 asymmetry, ADR-0004)', async () => {
-      const { run, calls } = fakeDriver({ stdout: completedTurn(line({ kind: 'answer', text: 'ok' })) });
+      const { run, calls } = fakeDriver({ stdout: completedTurn(envelope({ kind: 'answer', text: 'ok' })) });
       await run({ ...NEW_INPUT, resumeSessionId: VALID_SESSION_ID, extraArgs: ['-c', 'x=y'] });
       const argv = calls[0]?.argv ?? [];
       expect(argv.slice(0, 3)).toEqual(['exec', 'resume', VALID_SESSION_ID]);
       expect(argv).not.toContain('--sandbox');
       expect(argv).toContain('--output-schema');
-      expect(argv).toContain('-c'); // read-only + MCP config ride on extraArgs for resume
+      // resume still carries the headless isolation flags; read-only for resume
+      // rides on config (extraArgs), pending a resume-specific spike (batch E/F)
+      expect(argv).toContain('--skip-git-repo-check');
+      expect(argv).toContain('--ignore-user-config');
+      expect(argv).toContain('-c');
       expect(argv[argv.length - 1]).toBe('ship the blog');
     });
 
@@ -174,7 +191,7 @@ describe('createCoordinatorDriver (ADR-0006, coordination batch C)', () => {
     });
 
     it('fails closed when the JSON is not a valid decision', async () => {
-      const { run } = fakeDriver({ stdout: completedTurn(line({ kind: 'launch_missiles' })) });
+      const { run } = fakeDriver({ stdout: completedTurn(envelope({ kind: 'launch_missiles' })) });
       const outcome = await run(NEW_INPUT);
       expect(outcome.kind).toBe('failed');
       if (outcome.kind === 'failed') {

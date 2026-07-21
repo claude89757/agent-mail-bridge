@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   COORDINATOR_DECISION_SCHEMA,
   parseCoordinatorDecision,
+  parseCoordinatorDecisionEnvelope,
   type CoordinatorDecision,
 } from '../../src/domain/coordinatorDecision.js';
 
@@ -89,6 +90,13 @@ describe('parseCoordinatorDecision (ADR-0006, coordination batch A)', () => {
       expect(decision).toEqual({ kind: 'clarify', question: 'pick one', options: ['blog', 'blog-legacy'] });
     });
 
+    it('treats null options as no options (wire schema nullable encoding, ADR-0007)', () => {
+      expect(ok({ kind: 'clarify', question: 'pick', options: null })).toEqual({
+        kind: 'clarify',
+        question: 'pick',
+      });
+    });
+
     it('rejects a clarify with a non-string in options (fail closed)', () => {
       expect(errorOf({ kind: 'clarify', question: 'pick', options: ['blog', 7] })).toMatch(/options/);
     });
@@ -130,18 +138,52 @@ describe('parseCoordinatorDecision (ADR-0006, coordination batch A)', () => {
   });
 });
 
-describe('COORDINATOR_DECISION_SCHEMA (ADR-0006, coordination batch A)', () => {
-  it('is a JSON-Schema object whose three branches match the three decision kinds', () => {
-    const branches = COORDINATOR_DECISION_SCHEMA.oneOf;
-    expect(Array.isArray(branches)).toBe(true);
+describe('COORDINATOR_DECISION_SCHEMA (ADR-0007 wire shape)', () => {
+  it('nests the union under a root object envelope (provider rejects root-level unions)', () => {
+    expect(COORDINATOR_DECISION_SCHEMA.type).toBe('object');
+    expect(COORDINATOR_DECISION_SCHEMA.additionalProperties).toBe(false);
+    expect(COORDINATOR_DECISION_SCHEMA.required).toEqual(['decision']);
+  });
+
+  it('uses anyOf (not oneOf) with three branches matching the three decision kinds', () => {
+    const branches = COORDINATOR_DECISION_SCHEMA.properties.decision.anyOf;
     expect(branches).toHaveLength(3);
-    const kinds = branches.map((branch) => branch.properties.kind.const).sort();
+    const kinds = branches.map((branch) => branch.properties.kind.enum[0]).sort();
     expect(kinds).toEqual(['answer', 'clarify', 'dispatch']);
   });
 
-  it('locks every branch to additionalProperties:false (no smuggled fields)', () => {
-    for (const branch of COORDINATOR_DECISION_SCHEMA.oneOf) {
+  it('locks every branch strict: additionalProperties:false and every property required', () => {
+    for (const branch of COORDINATOR_DECISION_SCHEMA.properties.decision.anyOf) {
       expect(branch.additionalProperties).toBe(false);
+      expect([...branch.required].sort()).toEqual(Object.keys(branch.properties).sort());
     }
+  });
+});
+
+describe('parseCoordinatorDecisionEnvelope (ADR-0007 wrapper unwrap)', () => {
+  it('unwraps the decision envelope and validates the inner decision', () => {
+    const result = parseCoordinatorDecisionEnvelope({
+      decision: { kind: 'answer', text: 'you have 2 projects' },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.decision).toEqual({ kind: 'answer', text: 'you have 2 projects' });
+    }
+  });
+
+  it('fails closed when the decision inside the envelope is invalid', () => {
+    expect(parseCoordinatorDecisionEnvelope({ decision: { kind: 'exec' } }).ok).toBe(false);
+  });
+
+  it('fails closed when the envelope field is missing', () => {
+    const result = parseCoordinatorDecisionEnvelope({ answer: 'x' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/decision/);
+    }
+  });
+
+  it('fails closed on a non-object', () => {
+    expect(parseCoordinatorDecisionEnvelope('nope').ok).toBe(false);
   });
 });
