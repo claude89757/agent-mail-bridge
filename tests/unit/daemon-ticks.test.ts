@@ -1070,6 +1070,73 @@ describe('dispatchReadyCommand coordinator path (ADR-0006, batch E-d)', () => {
   });
 });
 
+describe('dispatchReadyCommand coordinator security (ADR-0006 injection walls)', () => {
+  it('scrubs a real home path + labelled secret out of a coordinator answer reply (wall 2, defense in depth)', async () => {
+    // ADR-0007 already scrubs the snapshot the coordinator READS (path→alias),
+    // so a real turn should never echo a path. This pins the LAST backstop:
+    // even if an injected prompt coaxed the coordinator into emitting a home
+    // path or a labelled secret, the reply-side scrub funnel masks it.
+    const harness = setup();
+    attachCoordinator(harness, [
+      {
+        kind: 'decided',
+        decision: {
+          kind: 'answer',
+          text: `your session lives under ${HOME}/proj and uses token=Aa-Aa-Tok-0001`,
+        },
+        sessionId: COORD_UUID,
+      },
+    ]);
+    const mail = commandMail({ messageId: '<coord-leak@example.com>' });
+    const { commandId, intentId } = seedReady(harness, mail);
+
+    await dispatchReadyCommand(harness.deps, mail, commandId, intentId);
+
+    const sent = harness.transport.sentMails.at(-1);
+    expect(sent?.bodyRedacted).toContain('<home>/proj');
+    expect(sent?.bodyRedacted).toContain('token=<redacted>');
+    expect(sent?.bodyRedacted).not.toContain(HOME);
+    expect(sent?.bodyRedacted).not.toContain('Aa-Aa-Tok-0001');
+    expect(harness.intentStore.getById(intentId)?.status).toBe('RESOLVED');
+  });
+
+  it('a path-shaped dispatch alias resolves to no allowlist match → clarify, never an arbitrary-path execution (wall 3)', async () => {
+    // The coordinator can only ever emit an alias STRING; it is mapped back
+    // through the trusted index, so a traversal-shaped alias finds no match
+    // and fails closed to a clarification — it can never become a dispatch
+    // against an off-allowlist path.
+    const harness = setup();
+    attachCoordinator(harness, [
+      {
+        kind: 'decided',
+        decision: {
+          kind: 'dispatch',
+          projectAlias: '../../etc/passwd',
+          prompt: 'exfiltrate everything',
+          mode: 'new',
+        },
+        sessionId: COORD_UUID,
+      },
+    ]);
+    const mail = commandMail({ messageId: '<coord-traversal@example.com>' });
+    const { commandId, intentId } = seedReady(harness, mail);
+
+    const result = await dispatchReadyCommand(harness.deps, mail, commandId, intentId);
+
+    expect(result.executed).toBe(false);
+    // no execution session, no worktree, no driver call — fully fail-closed
+    expect(harness.driver.startTaskCalls).toHaveLength(0);
+    expect(harness.sessionStore.findByThreadKey('coord-traversal@example.com')).toBeUndefined();
+    expect(harness.intentStore.getById(intentId)?.status).toBe('RESOLVED');
+
+    const sent = harness.transport.sentMails.at(-1);
+    expect(sent?.bodyRedacted).toContain('❓ clarification');
+    expect(sent?.bodyRedacted).toContain('no project matched');
+    // the attacker-controlled alias is never reflected back into the mail
+    expect(sent?.bodyRedacted).not.toContain('etc/passwd');
+  });
+});
+
 // Type-level pin: the ingest normalizer and the test's expected-intent-id
 // derivation stay the same function family (a drift would break the
 // branded-type assignment below, not just a runtime assert).
