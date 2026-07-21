@@ -36,19 +36,23 @@
  * mirrors ADR-0002's measured read half; the SMTP twin lives in
  * `buildDefaultSmtpSend`).
  */
-import { readFileSync as fsReadFileSync } from 'node:fs';
+import { mkdirSync, readFileSync as fsReadFileSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { homedir as osHomedir } from 'node:os';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { buildDefaultProjectScanIo, buildProjectIndex } from '../application/projectIndex.js';
 import { buildDefaultWorktreeIo, createTaskWorktree } from '../application/worktreeManager.js';
 import { assembleDaemon, readCredentialsFile } from '../daemon/assembly.js';
-import type { AssembledDaemon, AssemblyBuilders } from '../daemon/assembly.js';
+import type { AssembledDaemon, AssemblyBuilders, BuildCoordinatorInput } from '../daemon/assembly.js';
 import { runDaemonShell } from '../daemon/shell.js';
 import type { ShellDeps, ShellOutcome } from '../daemon/shell.js';
+import type { CoordinatorTickConfig } from '../daemon/ticks.js';
+import { COORDINATOR_DECISION_SCHEMA } from '../domain/coordinatorDecision.js';
 import { scrubText } from '../domain/replyComposition.js';
-import { buildDefaultSpawnCodex, createCodexDriver } from '../drivers/codexDriver.js';
+import { buildDefaultSpawnCodex, createCodexDriver, type SpawnCodex } from '../drivers/codexDriver.js';
+import { createCoordinatorDriver } from '../drivers/coordinatorDriver.js';
 import { openDatabase } from '../store/database.js';
 import {
   buildDefaultSmtpSend,
@@ -228,6 +232,36 @@ export function buildProductionAssemblyBuilders(): AssemblyBuilders {
     homedir: () => osHomedir(),
     readCredentials: readCredentialsFile,
     clock: () => new Date().toISOString(),
+    buildCoordinator: (input) =>
+      buildCoordinatorRuntime({ ...input, spawnCodex: buildDefaultSpawnCodex() }),
+  };
+}
+
+/**
+ * Production `AssemblyBuilders.buildCoordinator` (ADR-0006, batch E-d),
+ * factored out and exported so the live E2E can reuse the EXACT wiring with a
+ * call-capped `spawnCodex` (nothing about the coordinator's construction is
+ * test-only). Materializes `COORDINATOR_DECISION_SCHEMA` into the bridge's
+ * scratch dir (the `--output-schema` file the read-only turn is shaped by),
+ * constructs the read-only codex coordinator driver, and pins `allowResume`
+ * OFF — codex 0.144.6's `exec resume` cannot assert `--sandbox`, so multi-turn
+ * resume's read-only wall is an unpinned spike (RED LINE 6), and every turn
+ * stays a fresh `--sandbox read-only` turn until it lands. The schema file is
+ * overwritten each start (idempotent); no cleanup handle, so `close()` is
+ * unchanged.
+ */
+export function buildCoordinatorRuntime(
+  input: BuildCoordinatorInput & { spawnCodex: SpawnCodex },
+): CoordinatorTickConfig {
+  mkdirSync(input.scratchDir, { recursive: true });
+  const schemaPath = join(input.scratchDir, 'decision.schema.json');
+  writeFileSync(schemaPath, `${JSON.stringify(COORDINATOR_DECISION_SCHEMA, null, 2)}\n`, 'utf8');
+  return {
+    runCoordinatorTurn: createCoordinatorDriver({ spawnCodex: input.spawnCodex }),
+    coordinatorSessionStore: input.coordinatorSessionStore,
+    coordinatorCwd: input.scratchDir,
+    schemaPath,
+    allowResume: false,
   };
 }
 

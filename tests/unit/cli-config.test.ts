@@ -315,6 +315,49 @@ describe('validateConfig (D-P5S-2)', () => {
     }
   });
 
+  describe('coordinator (ADR-0006 batch E-d)', () => {
+    it('is optional — absent leaves config.coordinator undefined (deterministic default)', () => {
+      const result = validateConfig(validRaw());
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.config.coordinator).toBeUndefined();
+      }
+    });
+
+    it('accepts { enabled: true } / { enabled: false } verbatim', () => {
+      const on = validateConfig(validRaw({ coordinator: { enabled: true } }));
+      const off = validateConfig(validRaw({ coordinator: { enabled: false } }));
+      expect(on.ok).toBe(true);
+      expect(off.ok).toBe(true);
+      if (on.ok) expect(on.config.coordinator).toEqual({ enabled: true });
+      if (off.ok) expect(off.config.coordinator).toEqual({ enabled: false });
+    });
+
+    it('rejects a non-boolean enabled, naming the field path', () => {
+      const result = validateConfig(validRaw({ coordinator: { enabled: 'yes' } }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.some((e) => e.startsWith('coordinator.enabled:'))).toBe(true);
+      }
+    });
+
+    it('rejects a speculative allowResume key (unknown field — must not silently no-op, RED LINE 6)', () => {
+      const result = validateConfig(validRaw({ coordinator: { enabled: true, allowResume: true } }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.some((e) => e.includes('coordinator.allowResume'))).toBe(true);
+      }
+    });
+
+    it('rejects a non-object coordinator', () => {
+      const result = validateConfig(validRaw({ coordinator: 'on' }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.some((e) => e.startsWith('coordinator:'))).toBe(true);
+      }
+    });
+  });
+
   it('rejects an empty credentialsEnvFile, naming the field path', () => {
     const result = validateConfig(validRaw({ credentialsEnvFile: '' }));
 

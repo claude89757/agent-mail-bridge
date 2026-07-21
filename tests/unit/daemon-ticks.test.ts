@@ -875,7 +875,11 @@ interface CoordProbe {
  *  one repeats) and records its inputs, over a REAL `CoordinatorSessionStore`
  *  on the harness db — so persistence + resume threading are exercised for
  *  real, only the model turn is faked. */
-function attachCoordinator(harness: Harness, outcomes: readonly CoordinatorRunOutcome[]): CoordProbe {
+function attachCoordinator(
+  harness: Harness,
+  outcomes: readonly CoordinatorRunOutcome[],
+  options: { allowResume?: boolean } = {},
+): CoordProbe {
   const sessionStore = new CoordinatorSessionStore(harness.db);
   const inputs: CoordinatorRunInput[] = [];
   let call = 0;
@@ -893,6 +897,7 @@ function attachCoordinator(harness: Harness, outcomes: readonly CoordinatorRunOu
     coordinatorSessionStore: sessionStore,
     coordinatorCwd: COORD_CWD,
     schemaPath: COORD_SCHEMA_PATH,
+    ...(options.allowResume !== undefined ? { allowResume: options.allowResume } : {}),
   } satisfies CoordinatorTickConfig;
   return { sessionStore, inputs };
 }
@@ -1040,11 +1045,13 @@ describe('dispatchReadyCommand coordinator path (ADR-0006, batch E-d)', () => {
     expect(coord.sessionStore.findByThreadKey('coord-fallback@example.com')).toBeUndefined();
   });
 
-  it('an already-persisted coordinator session is passed back as resumeSessionId', async () => {
+  it('with allowResume ON, an already-persisted coordinator session is passed back as resumeSessionId', async () => {
     const harness = setup();
-    const coord = attachCoordinator(harness, [
-      { kind: 'decided', decision: { kind: 'answer', text: 'still running.' }, sessionId: COORD_UUID },
-    ]);
+    const coord = attachCoordinator(
+      harness,
+      [{ kind: 'decided', decision: { kind: 'answer', text: 'still running.' }, sessionId: COORD_UUID }],
+      { allowResume: true },
+    );
     coord.sessionStore.upsert('coord-resume@example.com', COORD_UUID, SEED_NOW);
     const mail = commandMail({ messageId: '<coord-resume@example.com>' });
     const { commandId, intentId } = seedReady(harness, mail);
@@ -1053,6 +1060,23 @@ describe('dispatchReadyCommand coordinator path (ADR-0006, batch E-d)', () => {
 
     expect(coord.inputs).toHaveLength(1);
     expect(coord.inputs[0]?.resumeSessionId).toBe(COORD_UUID);
+  });
+
+  it('with allowResume OFF (default, RED LINE 6), a persisted session is NOT resumed — every turn stays a fresh read-only turn', async () => {
+    const harness = setup();
+    const coord = attachCoordinator(harness, [
+      { kind: 'decided', decision: { kind: 'answer', text: 'still running.' }, sessionId: COORD_UUID },
+    ]);
+    // A prior turn's coordinator id exists for this thread...
+    coord.sessionStore.upsert('coord-noresume@example.com', COORD_UUID, SEED_NOW);
+    const mail = commandMail({ messageId: '<coord-noresume@example.com>' });
+    const { commandId, intentId } = seedReady(harness, mail);
+
+    await dispatchReadyCommand(harness.deps, mail, commandId, intentId);
+
+    // ...but the default (no allowResume) never threads it into the turn.
+    expect(coord.inputs).toHaveLength(1);
+    expect(coord.inputs[0]?.resumeSessionId).toBeUndefined();
   });
 
   it('a succeeded turn with a null sessionId persists NO coordinator session', async () => {

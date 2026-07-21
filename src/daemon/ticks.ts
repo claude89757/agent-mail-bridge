@@ -211,6 +211,20 @@ export interface CoordinatorTickConfig {
   schemaPath: string;
   /** MCP-config / resume read-only argv the driver appends, if any. */
   coordinatorExtraArgs?: readonly string[];
+  /**
+   * Whether multi-turn continuity via `codex exec resume` is permitted. FALSE
+   * by default — the SAFE posture (RED LINE 6, fail closed): codex 0.144.6's
+   * `exec resume` does NOT accept `--sandbox`, so the coordinator's read-only
+   * wall on a RESUMED turn rides on a config key that is still an unpinned
+   * batch-D spike (`coordinatorDriver.ts`; pinning it needs a real-codex run,
+   * itself red-line-5 gated). Until that spike lands, an enabled coordinator
+   * runs EVERY turn as a fresh `--sandbox read-only` turn (spike-verified) and
+   * `runCoordinatorForCommand` passes NO `resumeSessionId` — trading multi-turn
+   * memory for a guaranteed read-only wall rather than downgrading it. The
+   * store is still upserted, so flipping this true after the spike restores
+   * continuity with no data migration.
+   */
+  allowResume?: boolean;
 }
 
 export interface MailTickDeps {
@@ -445,8 +459,14 @@ async function runCoordinatorForCommand(
   senderDeps: ReplySenderDeps,
 ): Promise<ReadyReply | null> {
   const dryRun = deps.intentStore.getById(intentId)?.dryRun ?? false;
+  // RED LINE 6 gate (CoordinatorTickConfig.allowResume doc): resume ONLY when
+  // explicitly permitted. Off by default ⇒ no resumeSessionId ⇒ every turn is
+  // a fresh `--sandbox read-only` turn (the spike-verified path), never the
+  // unpinned-read-only resume path.
   const resumeSessionId =
-    coordinator.coordinatorSessionStore.findByThreadKey(threadKey)?.coordinatorThreadId ?? null;
+    coordinator.allowResume === true
+      ? (coordinator.coordinatorSessionStore.findByThreadKey(threadKey)?.coordinatorThreadId ?? null)
+      : null;
 
   const coordDeps: CoordinateDeps = {
     intentStore: deps.intentStore,

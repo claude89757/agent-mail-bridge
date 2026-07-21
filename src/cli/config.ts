@@ -42,6 +42,24 @@ export interface ProjectsConfig {
 }
 
 /**
+ * ADR-0006 conversational coordinator opt-in (batch E-d). ABSENT or
+ * `enabled: false` ⇒ the daemon runs the pure deterministic router — the v0.1
+ * default, unchanged behavior, zero model quota. `enabled: true` ⇒ every
+ * thread-bound command first gets one read-only codex coordinator turn (with a
+ * deterministic fallback on failure), which STABLY consumes model quota
+ * (ADR-0006 accepted this cost).
+ *
+ * Deliberately NO `allowResume` knob here: codex 0.144.6's `exec resume` can't
+ * assert `--sandbox`, so multi-turn resume's read-only wall is an unpinned
+ * spike (RED LINE 6). The production wiring hard-pins resume OFF until that
+ * spike lands — exposing it as config would let an operator flip on an
+ * unverified-read-only path, so it stays out of the schema on purpose.
+ */
+export interface CoordinatorConfig {
+  readonly enabled: boolean;
+}
+
+/**
  * Config schema v1 (D-P5S-2, extended additively by D-P5B12-1 — version
  * stays 1: every new field is optional with a pinned default, so every
  * pre-existing config file keeps loading unchanged). `timeWindow` reuses
@@ -90,6 +108,9 @@ export interface BridgeConfig {
   readonly timeWindow?: TimeWindowConfig;
   /** Defaults to `false` when omitted. */
   readonly dryRun: boolean;
+  /** ADR-0006 coordinator opt-in; absent ⇒ deterministic router (v0.1
+   *  default). See {@link CoordinatorConfig}. */
+  readonly coordinator?: CoordinatorConfig;
 }
 
 export type ConfigResult =
@@ -108,6 +129,7 @@ const KNOWN_FIELDS = new Set<string>([
   'mailbox',
   'timeWindow',
   'dryRun',
+  'coordinator',
 ]);
 
 const POLL_INTERVAL_MIN = 5;
@@ -274,6 +296,37 @@ function validateProjects(raw: unknown, errors: string[]): ProjectsConfig | unde
   };
 }
 
+const COORDINATOR_FIELDS = new Set<string>(['enabled']);
+
+/** `{ enabled: boolean }`, strict on unknown keys (a security-relevant
+ *  opt-in — a typo'd or speculative field like `allowResume` must surface,
+ *  not silently no-op). */
+function validateCoordinator(raw: unknown, errors: string[]): CoordinatorConfig | undefined {
+  if (!isPlainObject(raw)) {
+    errors.push(`coordinator: must be an object, got ${describeType(raw)}`);
+    return undefined;
+  }
+
+  const before = errors.length;
+
+  for (const key of Object.keys(raw)) {
+    if (!COORDINATOR_FIELDS.has(key)) {
+      errors.push(`coordinator.${key}: unknown field`);
+    }
+  }
+
+  const enabled = raw.enabled;
+  if (typeof enabled !== 'boolean') {
+    errors.push(`coordinator.enabled: must be a boolean, got ${describeType(enabled)}`);
+  }
+
+  if (errors.length > before) {
+    return undefined;
+  }
+
+  return { enabled: enabled as boolean };
+}
+
 /**
  * Validates already-`JSON.parse`d config data against schema v1. Fails
  * closed: an unrecognized top-level field is a hard error (rejected, never
@@ -388,6 +441,9 @@ export function validateConfig(raw: unknown): ConfigResult {
   const timeWindow =
     raw.timeWindow === undefined ? undefined : validateTimeWindow(raw.timeWindow, errors);
 
+  const coordinator =
+    raw.coordinator === undefined ? undefined : validateCoordinator(raw.coordinator, errors);
+
   if (errors.length > 0) {
     return { ok: false, errors };
   }
@@ -406,6 +462,7 @@ export function validateConfig(raw: unknown): ConfigResult {
       mailbox: typeof mailbox === 'string' ? mailbox : 'INBOX',
       dryRun: typeof dryRun === 'boolean' ? dryRun : false,
       ...(timeWindow !== undefined ? { timeWindow } : {}),
+      ...(coordinator !== undefined ? { coordinator } : {}),
     },
   };
 }

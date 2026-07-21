@@ -41,6 +41,7 @@
  * the injected `clock`, output belongs to the shell/CLI.
  */
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import type { TransactionRunner } from '../application/ingest.js';
 import type { BuildProjectIndexInput, ProjectIndex, RejectedDir } from '../application/projectIndex.js';
@@ -49,6 +50,7 @@ import type { BridgeConfig } from '../cli/config.js';
 import type { AgentDriver } from '../drivers/types.js';
 import { ClarificationStore } from '../store/clarificationStore.js';
 import { CommandStore } from '../store/commandStore.js';
+import { CoordinatorSessionStore } from '../store/coordinatorSessionStore.js';
 import type { openDatabase } from '../store/database.js';
 import { IntentStore } from '../store/intentStore.js';
 import { MetaStore } from '../store/metaStore.js';
@@ -64,7 +66,7 @@ import {
   sweepExpiredClarifications,
   sweepStrandedSending,
 } from './ticks.js';
-import type { MailTickDeps } from './ticks.js';
+import type { CoordinatorTickConfig, MailTickDeps } from './ticks.js';
 
 export interface AssemblyCredentials {
   user: string;
@@ -108,6 +110,24 @@ export interface AssemblyBuilders {
   readCredentials(envFilePath: string): AssemblyCredentials;
   /** Production: `() => new Date().toISOString()`. */
   clock(): string;
+  /**
+   * ADR-0006 coordinator (batch E-d). Called ONLY when `config.coordinator`
+   * enables it; if enabled without this builder present, assembly fails closed
+   * (an enabled coordinator with no way to build it is a wiring bug, not a
+   * silent deterministic fallback). Production: `buildCoordinatorRuntime`
+   * (`src/cli/start.ts`) — materializes the decision schema into `scratchDir`,
+   * constructs the read-only codex coordinator driver, and pins resume OFF
+   * (RED LINE 6). Absent in the deterministic-only default.
+   */
+  buildCoordinator?(input: BuildCoordinatorInput): CoordinatorTickConfig;
+}
+
+/** What `assembleDaemon` hands `buildCoordinator`: the bridge-managed scratch
+ *  dir (the coordinator turn's cwd + where the decision schema is written) and
+ *  the thread↔coordinator-session store built over the assembly's own db. */
+export interface BuildCoordinatorInput {
+  scratchDir: string;
+  coordinatorSessionStore: CoordinatorSessionStore;
 }
 
 export interface AssembledDaemon {
@@ -171,6 +191,25 @@ export async function assembleDaemon(
 
     const homeDir = builders.homedir();
 
+    // ADR-0006 coordinator (batch E-d): built ONLY when config opts in. Enabled
+    // without a builder is a wiring bug ⇒ fail closed (never a silent
+    // deterministic fallback that hides a misconfiguration). The scratch dir is
+    // a bridge-managed sibling of the db — the coordinator turn's read-only cwd
+    // and where its decision schema is materialized.
+    let coordinator: CoordinatorTickConfig | undefined;
+    if (config.coordinator?.enabled === true) {
+      if (builders.buildCoordinator === undefined) {
+        throw new Error(
+          'assembleDaemon: config.coordinator.enabled is true but no buildCoordinator builder ' +
+            'was provided (wiring bug — refusing to fall back to the deterministic router)',
+        );
+      }
+      coordinator = builders.buildCoordinator({
+        scratchDir: join(dirname(config.dbPath), 'coordinator-scratch'),
+        coordinatorSessionStore: new CoordinatorSessionStore(db),
+      });
+    }
+
     const mailTickDeps: MailTickDeps = {
       db: transactionDb,
       transport,
@@ -193,6 +232,7 @@ export async function assembleDaemon(
         ...(config.timeWindow !== undefined ? { timeWindow: config.timeWindow } : {}),
       },
       clock: builders.clock,
+      ...(coordinator !== undefined ? { coordinator } : {}),
     };
 
     const ticks: ShellTicks = {

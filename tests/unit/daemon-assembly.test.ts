@@ -7,7 +7,15 @@ import type { BuildProjectIndexInput, RejectedDir } from '../../src/application/
 import type { CreateWorktreeInput } from '../../src/application/worktreeManager.js';
 import type { BridgeConfig } from '../../src/cli/config.js';
 import { assembleDaemon, readCredentialsFile } from '../../src/daemon/assembly.js';
-import type { AssemblyBuilders, BuildTransportInput } from '../../src/daemon/assembly.js';
+import type {
+  AssemblyBuilders,
+  BuildCoordinatorInput,
+  BuildTransportInput,
+} from '../../src/daemon/assembly.js';
+import type {
+  CoordinatorRunInput,
+  CoordinatorRunOutcome,
+} from '../../src/drivers/coordinatorDriver.js';
 import { openDatabase } from '../../src/store/database.js';
 import { OutboxStore } from '../../src/store/outboxStore.js';
 import type { IncomingMail } from '../../src/transports/types.js';
@@ -57,7 +65,11 @@ interface Harness {
     buildIndex: BuildProjectIndexInput[];
     createWorktree: CreateWorktreeInput[];
     directoryExists: string[];
+    buildCoordinator: BuildCoordinatorInput[];
   };
+  /** Every coordinator turn the assembled tick drove — non-empty ONLY when the
+   *  coordinator builder's product actually reached `mailTickDeps.coordinator`. */
+  coordinatorTurns: CoordinatorRunInput[];
   closeOrder: string[];
   db: ReturnType<typeof openDatabase>;
   transport: FakeMailTransport;
@@ -78,7 +90,9 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     buildIndex: [],
     createWorktree: [],
     directoryExists: [],
+    buildCoordinator: [],
   };
+  const coordinatorTurns: CoordinatorRunInput[] = [];
   const closeOrder: string[] = [];
 
   const db = openDatabase(':memory:');
@@ -138,11 +152,30 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       return { user: SENTINEL_USER, pass: SENTINEL_PASS };
     },
     clock: () => new Date(Date.UTC(2026, 6, 19, 0, 0, tick++)).toISOString(),
+    buildCoordinator: (input) => {
+      calls.buildCoordinator.push(input);
+      return {
+        runCoordinatorTurn: (turnInput) => {
+          coordinatorTurns.push(turnInput);
+          const outcome: CoordinatorRunOutcome = {
+            kind: 'decided',
+            decision: { kind: 'answer', text: 'assembly wiring answer' },
+            sessionId: null,
+          };
+          return Promise.resolve(outcome);
+        },
+        coordinatorSessionStore: input.coordinatorSessionStore,
+        coordinatorCwd: input.scratchDir,
+        schemaPath: join(input.scratchDir, 'decision.schema.json'),
+        allowResume: false,
+      };
+    },
   };
 
   return {
     builders,
     calls,
+    coordinatorTurns,
     closeOrder,
     db,
     get transport() {
@@ -258,6 +291,61 @@ describe('assembleDaemon (D-P5B12-4)', () => {
     expect(h.transport.sentMails[0]?.bodyRedacted).toContain('cannot route: no match');
 
     await assembled.close();
+  });
+
+  describe('coordinator wiring (ADR-0006 batch E-d)', () => {
+    it('config.coordinator.enabled ⇒ buildCoordinator is called (scratch dir sibling of the db) AND its product drives the assembled tick', async () => {
+      const h = makeHarness();
+      const config = baseConfig({ coordinator: { enabled: true } });
+
+      const assembled = await assembleDaemon(config, h.builders);
+      assembled.metaStore.setReadyAtIfUnset(READY_AT);
+      h.transport.deliver(commandMail());
+      await assembled.ticks.mailTick();
+
+      expect(h.calls.buildCoordinator).toHaveLength(1);
+      expect(h.calls.buildCoordinator[0]?.scratchDir).toBe('/tmp/fixtures/data/coordinator-scratch');
+      // The built coordinator actually reached mailTickDeps.coordinator: the
+      // assembled tick drove exactly one coordinator turn, whose answer was sent.
+      expect(h.coordinatorTurns).toHaveLength(1);
+      expect(h.transport.sentMails[0]?.kind).toBe('RESULT');
+      expect(h.transport.sentMails[0]?.bodyRedacted).toContain('💬 answer');
+
+      await assembled.close();
+    });
+
+    it('no coordinator config ⇒ buildCoordinator is never called (deterministic default)', async () => {
+      const h = makeHarness();
+      const assembled = await assembleDaemon(baseConfig(), h.builders);
+      assembled.metaStore.setReadyAtIfUnset(READY_AT);
+      h.transport.deliver(commandMail());
+      await assembled.ticks.mailTick();
+
+      expect(h.calls.buildCoordinator).toEqual([]);
+      expect(h.coordinatorTurns).toEqual([]);
+      await assembled.close();
+    });
+
+    it('coordinator: { enabled: false } ⇒ buildCoordinator is never called', async () => {
+      const h = makeHarness();
+      const assembled = await assembleDaemon(
+        baseConfig({ coordinator: { enabled: false } }),
+        h.builders,
+      );
+      expect(h.calls.buildCoordinator).toEqual([]);
+      await assembled.close();
+    });
+
+    it('enabled but NO buildCoordinator builder ⇒ assembleDaemon throws (fail closed), closing the db it opened', async () => {
+      const h = makeHarness();
+      const buildersWithout: AssemblyBuilders = { ...h.builders };
+      delete buildersWithout.buildCoordinator;
+
+      await expect(
+        assembleDaemon(baseConfig({ coordinator: { enabled: true } }), buildersWithout),
+      ).rejects.toThrow(/buildCoordinator/);
+      expect(h.closeOrder).toContain('db');
+    });
   });
 
   it('surfaces the index build report (rejected roots) for the shell to log', async () => {
