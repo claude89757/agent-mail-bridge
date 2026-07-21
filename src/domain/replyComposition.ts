@@ -218,15 +218,20 @@ export function assembleCappedBody(parts: {
 // ---------------------------------------------------------------------------
 
 /**
- * Mirror of `src/store/outboxStore.ts`'s `OutboxKind`, NARROWED to the
- * kinds this batch's composers produce ('CLARIFICATION' composition is the
- * clarification batch's scope). Re-declared instead of imported because
- * `src/domain/` never imports from upper layers — not even type-only (no
- * existing domain file does, and this module keeps that invariant). A
- * narrower literal union is structurally assignable to `OutboxKind`, so
+ * Mirror of `src/store/outboxStore.ts`'s `OutboxKind`. Re-declared instead
+ * of imported because `src/domain/` never imports from upper layers — not
+ * even type-only (no existing domain file does, and this module keeps that
+ * invariant). Any subset is structurally assignable to `OutboxKind`, so
  * nothing upstream notices the difference.
+ *
+ * 'CLARIFICATION' entered here with ADR-0006 batch E: the conversational
+ * coordinator asks the user to disambiguate IN-THREAD — re-reading the
+ * whole thread each turn IS the binding, so no C8 token round-trip — and
+ * `composeCoordinatorClarifyReply` is that composer. The union now matches
+ * `OutboxKind` member-for-member; the re-declaration is kept for the
+ * import invariant, not for narrowing.
  */
-export type ComposedReplyKind = 'ACK' | 'RESULT' | 'ERROR';
+export type ComposedReplyKind = 'ACK' | 'RESULT' | 'CLARIFICATION' | 'ERROR';
 
 /**
  * Structurally identical to `src/transports/types.ts`'s `OutboundMail`
@@ -481,5 +486,54 @@ export function composeAckReply(
     commandId: ctx.commandId,
     subjectRedacted: composeSubject(ctx.originalSubject, ctx.scrub),
     bodyRedacted: assembleCappedBody({ head, eventEntries: [], tail: [] }),
+  };
+}
+
+/**
+ * Coordinator meta-query answer (RESULT): the coordinator resolved a
+ * read-only question ("what's running?", "did my last task finish?") and
+ * its free-text answer IS the product — there is no routing verdict, so
+ * `metaLines` gets `null`. The answer rides the same scrub+cap funnel as any
+ * terminal text: the coordinator's output is untrusted model text, exactly
+ * like a driver's, and must not leak a path/secret it happened to echo.
+ */
+export function composeCoordinatorAnswerReply(
+  ctx: ReplyContext,
+  answer: { text: string },
+): ComposedReply {
+  const head = [scrubText('💬 answer', ctx.scrub), '', ...metaLines(ctx, null)];
+  const tail = ['', 'answer:', scrubAndCapEventText(answer.text, ctx.scrub)];
+  return {
+    kind: 'RESULT',
+    commandId: ctx.commandId,
+    subjectRedacted: composeSubject(ctx.originalSubject, ctx.scrub),
+    bodyRedacted: assembleCappedBody({ head, eventEntries: [], tail }),
+  };
+}
+
+/**
+ * Coordinator clarification (CLARIFICATION): ADR-0006's conversational
+ * disambiguation. Binding is the thread itself — the coordinator re-reads
+ * the whole thread next turn and sees the user's answer — so, unlike C8's
+ * token round-trip, this composer carries no token, just the question and
+ * optional short option labels. Options are NAMES only, never paths (the
+ * `dryRunPlanLines` CLARIFY precedent), and still ride the scrub funnel.
+ * No routing verdict here either, so `metaLines` = null.
+ */
+export function composeCoordinatorClarifyReply(
+  ctx: ReplyContext,
+  clarify: { question: string; options?: readonly string[] },
+): ComposedReply {
+  const head = [scrubText('❓ clarification', ctx.scrub), '', ...metaLines(ctx, null)];
+  const optionLines =
+    clarify.options && clarify.options.length > 0
+      ? ['', 'options:', ...clarify.options.map((option) => scrubText(`- ${option}`, ctx.scrub))]
+      : [];
+  const tail = ['', 'question:', scrubAndCapEventText(clarify.question, ctx.scrub), ...optionLines];
+  return {
+    kind: 'CLARIFICATION',
+    commandId: ctx.commandId,
+    subjectRedacted: composeSubject(ctx.originalSubject, ctx.scrub),
+    bodyRedacted: assembleCappedBody({ head, eventEntries: [], tail }),
   };
 }

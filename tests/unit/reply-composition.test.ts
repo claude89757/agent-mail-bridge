@@ -4,6 +4,8 @@ import {
   assembleCappedBody,
   BODY_TOTAL_CAP,
   composeAckReply,
+  composeCoordinatorAnswerReply,
+  composeCoordinatorClarifyReply,
   composeDispatchFailedReply,
   composeDryRunReply,
   composeResultReply,
@@ -653,6 +655,105 @@ describe('reply subject (D-P4B9-3)', () => {
         verdict: 'DISPATCH_NEW',
       }).subjectRedacted,
     ).toBe('Re: token= <redacted>');
+  });
+});
+
+describe('composeCoordinatorAnswerReply (ADR-0006 batch E — a meta-query answer)', () => {
+  it('renders the free-text answer under an answer: region, kind RESULT, no verdict line', () => {
+    const mail = composeCoordinatorAnswerReply(replyContext(), {
+      text: 'there are two active sessions right now.',
+    });
+
+    expect(mail.kind).toBe('RESULT');
+    expect(mail.commandId).toBe(42);
+    expect(mail.bodyRedacted).toBe(
+      [
+        '💬 answer',
+        '',
+        'project: proj-a',
+        'intent: intent-0001',
+        '',
+        'answer:',
+        'there are two active sessions right now.',
+      ].join('\n'),
+    );
+    // A meta-query answer is not a routing outcome — no verdict line.
+    expect(mail.bodyRedacted).not.toContain('verdict:');
+  });
+
+  it('scrubs a worktree path leaked into the answer text', () => {
+    const mail = composeCoordinatorAnswerReply(replyContext(), {
+      text: `the worktree is at ${WORKTREE}/x.ts`,
+    });
+
+    expect(mail.bodyRedacted).toContain('the worktree is at <cwd>/x.ts');
+    expect(mail.bodyRedacted).not.toContain(WORKTREE);
+  });
+});
+
+describe('composeCoordinatorClarifyReply (ADR-0006 batch E — the coordinator disambiguates conversationally)', () => {
+  it('renders the question under a question: region, kind CLARIFICATION, no verdict line', () => {
+    const mail = composeCoordinatorClarifyReply(replyContext(), {
+      question: 'which project did you mean, proj-a or proj-b?',
+    });
+
+    expect(mail.kind).toBe('CLARIFICATION');
+    expect(mail.commandId).toBe(42);
+    expect(mail.bodyRedacted).toBe(
+      [
+        '❓ clarification',
+        '',
+        'project: proj-a',
+        'intent: intent-0001',
+        '',
+        'question:',
+        'which project did you mean, proj-a or proj-b?',
+      ].join('\n'),
+    );
+    expect(mail.bodyRedacted).not.toContain('verdict:');
+  });
+
+  it('lists options as bare dashes when provided', () => {
+    const mail = composeCoordinatorClarifyReply(replyContext(), {
+      question: 'which project did you mean?',
+      options: ['proj-a', 'proj-b'],
+    });
+
+    expect(mail.bodyRedacted).toBe(
+      [
+        '❓ clarification',
+        '',
+        'project: proj-a',
+        'intent: intent-0001',
+        '',
+        'question:',
+        'which project did you mean?',
+        '',
+        'options:',
+        '- proj-a',
+        '- proj-b',
+      ].join('\n'),
+    );
+  });
+
+  it('scrubs a worktree path leaked into the question text', () => {
+    const mail = composeCoordinatorClarifyReply(replyContext(), {
+      question: `did you mean the task in ${WORKTREE}?`,
+    });
+
+    expect(mail.bodyRedacted).toContain('did you mean the task in <cwd>?');
+    expect(mail.bodyRedacted).not.toContain(WORKTREE);
+  });
+
+  it('is structurally an OutboundMail despite the widened kind (transport seam)', () => {
+    // CLARIFICATION is the kind ADR-0006 batch E adds to ComposedReplyKind;
+    // this pins that the widened union stays assignable to OutboundMail
+    // (kind narrowed to a subtype of OutboxKind) with no upward import.
+    const mail: OutboundMail = composeCoordinatorClarifyReply(replyContext(), {
+      question: 'which project?',
+    });
+
+    expect(mail.kind).toBe('CLARIFICATION');
   });
 });
 
