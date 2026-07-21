@@ -1,7 +1,7 @@
 /**
  * Coordinator decision contract (ADR-0006 — 门后 codex 只读协调 agent,
- * coordination batch A). The协调 agent's ONLY structured output per
- * inbound mail is exactly one of three decisions:
+ * coordination batch A). The coordinator agent's ONLY structured output
+ * per inbound mail is exactly one of three decisions:
  *
  *   - `dispatch`  — run a task: name an allowlisted project (by ALIAS, never
  *                   a path) + the task prompt + whether this starts a new
