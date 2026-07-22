@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SpawnCodex, SpawnedCodex } from '../../src/drivers/codexDriver.js';
 import {
+  COORDINATOR_RESUME_SANDBOX_ARGS,
   COORDINATOR_SANDBOX_MODE,
   createCoordinatorDriver,
   type CoordinatorRunInput,
@@ -158,18 +159,25 @@ describe('createCoordinatorDriver (ADR-0006, coordination batch C)', () => {
       expect(argv.indexOf('model_reasoning_effort="low"')).toBeLessThan(argv.length - 1);
     });
 
-    it('resumes via `exec resume <id>` WITHOUT a --sandbox flag (codex 0.144.6 asymmetry, ADR-0004)', async () => {
+    it('resumes via `exec resume <id>` WITHOUT --sandbox but POSITIVELY asserts read-only via `-c sandbox_mode` (ADR-0004 asymmetry + ADR-0008 spike)', async () => {
       const { run, calls } = fakeDriver({ stdout: completedTurn(envelope({ kind: 'answer', text: 'ok' })) });
       await run({ ...NEW_INPUT, resumeSessionId: VALID_SESSION_ID, extraArgs: ['-c', 'x=y'] });
       const argv = calls[0]?.argv ?? [];
       expect(argv.slice(0, 3)).toEqual(['exec', 'resume', VALID_SESSION_ID]);
       expect(argv).not.toContain('--sandbox');
       expect(argv).toContain('--output-schema');
-      // resume still carries the headless isolation flags; read-only for resume
-      // rides on config (extraArgs), pending a resume-specific spike (batch E/F)
+      // The read-only wall on resume is a DRIVER INVARIANT (ADR-0008): codex
+      // 0.144.6 `exec resume` rejects `--sandbox`, so the sandbox is pinned via
+      // the `sandbox_mode` config key — the spike proved (filesystem ground
+      // truth) it OVERRIDES even a workspace-write creation sandbox back to
+      // read-only. Assert the pair is present and adjacent, so no wiring omission
+      // can silently drop the wall.
+      const roIdx = argv.indexOf('sandbox_mode="read-only"');
+      expect(roIdx).toBeGreaterThan(0);
+      expect(argv[roIdx - 1]).toBe('-c');
+      expect(COORDINATOR_RESUME_SANDBOX_ARGS).toEqual(['-c', 'sandbox_mode="read-only"']);
       expect(argv).toContain('--skip-git-repo-check');
       expect(argv).toContain('--ignore-user-config');
-      expect(argv).toContain('-c');
       expect(argv[argv.length - 1]).toBe('ship the blog');
     });
 

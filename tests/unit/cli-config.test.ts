@@ -341,7 +341,7 @@ describe('validateConfig (D-P5S-2)', () => {
       }
     });
 
-    it('rejects a speculative allowResume key (unknown field — must not silently no-op, RED LINE 6)', () => {
+    it('rejects an unknown key like allowResume (strict opt-in — resume is a driver invariant, never a config toggle)', () => {
       const result = validateConfig(validRaw({ coordinator: { enabled: true, allowResume: true } }));
       expect(result.ok).toBe(false);
       if (!result.ok) {

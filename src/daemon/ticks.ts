@@ -212,17 +212,18 @@ export interface CoordinatorTickConfig {
   /** MCP-config / resume read-only argv the driver appends, if any. */
   coordinatorExtraArgs?: readonly string[];
   /**
-   * Whether multi-turn continuity via `codex exec resume` is permitted. FALSE
-   * by default — the SAFE posture (RED LINE 6, fail closed): codex 0.144.6's
-   * `exec resume` does NOT accept `--sandbox`, so the coordinator's read-only
-   * wall on a RESUMED turn rides on a config key that is still an unpinned
-   * batch-D spike (`coordinatorDriver.ts`; pinning it needs a real-codex run,
-   * itself red-line-5 gated). Until that spike lands, an enabled coordinator
-   * runs EVERY turn as a fresh `--sandbox read-only` turn (spike-verified) and
-   * `runCoordinatorForCommand` passes NO `resumeSessionId` — trading multi-turn
-   * memory for a guaranteed read-only wall rather than downgrading it. The
-   * store is still upserted, so flipping this true after the spike restores
-   * continuity with no data migration.
+   * Whether multi-turn continuity via `codex exec resume` is permitted.
+   * Production enables it (`buildCoordinatorRuntime`) — multi-turn coordination
+   * is ADR-0006's core. It was FALSE until the ADR-0008 spike closed the RED
+   * LINE 6 gap: codex 0.144.6's `exec resume` does NOT accept `--sandbox`, but
+   * the spike proved the resume path is still read-only — it inherits the
+   * read-only creation sandbox AND the driver positively asserts
+   * `-c sandbox_mode="read-only"` (`COORDINATOR_RESUME_SANDBOX_ARGS`), which the
+   * spike showed OVERRIDES even a workspace-write session back to read-only on
+   * resume. When true, `runCoordinatorForCommand` threads the persisted
+   * coordinator thread id back as `resumeSessionId`. Kept as an injectable flag
+   * (not a config knob) so tests pin BOTH paths; default-absent stays fresh-only
+   * for any caller that wants it.
    */
   allowResume?: boolean;
 }

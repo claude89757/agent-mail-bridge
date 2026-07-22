@@ -20,16 +20,21 @@
  * Injection seam: reuses `CodexDriver`'s `SpawnCodex` type (a `child_process`
  * wrapper in production, a scripted process in tests), so every branch —
  * happy decision, unparseable output, invalid decision, empty turn, crash —
- * unit-tests with ZERO model quota. The real carrier questions (whether
- * read-only + MCP + `--output-schema` compose; whether the decision arrives
- * cleanly on the stream vs needs `-o/--output-last-message`; the exact
- * read-only config key on resume) are the batch-D spike, gated on red line 5.
+ * unit-tests with ZERO model quota. The carrier questions (whether read-only +
+ * `--output-schema` compose; whether the decision arrives cleanly on the stream
+ * vs needs `-o/--output-last-message`; the exact read-only config key on resume)
+ * were the batch-D spike (red line 5). They are now RESOLVED against real codex
+ * 0.144.6: read-only + `--output-schema` compose and the decision arrives as the
+ * final stream `agent_message` (ADR-0007 live E2E); resume is read-only via the
+ * `sandbox_mode` key (ADR-0008 spike). MCP is NOT used — context is pushed into
+ * the prompt (ADR-0007).
  *
  * new vs resume argv (ADR-0004 asymmetry, re-measured on codex 0.144.6):
- * `exec` accepts `--sandbox`, but `exec resume` does NOT — so the new-turn
- * path positively asserts `--sandbox read-only`, while the resume path omits
- * it and the read-only enforcement rides on `extraArgs` config the wiring
- * layer resolves (pinned in batch D). Either way this driver NEVER emits
+ * `exec` accepts `--sandbox`, but `exec resume` does NOT — so the new-turn path
+ * positively asserts `--sandbox read-only`, while the resume path positively
+ * asserts the read-only wall via `COORDINATOR_RESUME_SANDBOX_ARGS`
+ * (`-c sandbox_mode="read-only"`, ADR-0008: the spike proved it OVERRIDES the
+ * creation sandbox to read-only on resume). Either way this driver NEVER emits
  * `workspace-write` or any `--dangerously-bypass-*` flag, and a resume id is
  * whitelisted against `CODEX_SESSION_ID_PATTERN` BEFORE it may enter an argv
  * (argv-injection defense, mirroring `CodexDriver.resumeTask`).
@@ -104,6 +109,22 @@ export const COORDINATOR_ISOLATION_ARGS: readonly string[] = [
   '-c',
   'approval_policy="never"',
 ];
+
+/**
+ * The read-only wall on the RESUME path (ADR-0008, resume-sandbox spike). codex
+ * 0.144.6 `exec resume` REJECTS `--sandbox`, so the new-turn's `--sandbox
+ * read-only` cannot be repeated; the sandbox is pinned via the `sandbox_mode`
+ * config key instead. The spike proved this with filesystem ground truth: a
+ * session created `--sandbox workspace-write`, resumed with
+ * `-c sandbox_mode="read-only"`, had its write BLOCKED — the key OVERRIDES the
+ * creation sandbox back to read-only on resume. So this is a POSITIVE,
+ * driver-owned safety invariant (the resume twin of the new-turn's `--sandbox
+ * read-only`), never a wiring-layer option a caller might forget. Quoted TOML
+ * string form mirrors `approval_policy="never"`; codex's documented `-c`
+ * contract (value parsed as TOML) yields the exact `read-only` the spike
+ * verified. Emitted BEFORE `extraArgs`, so nothing a caller passes can shadow it.
+ */
+export const COORDINATOR_RESUME_SANDBOX_ARGS: readonly string[] = ['-c', 'sandbox_mode="read-only"'];
 
 /**
  * The one shape codex mints for `thread.started.thread_id` (ADR-0004): a
@@ -209,17 +230,19 @@ function buildArgv(input: CoordinatorRunInput): readonly string[] {
           '(argv-injection guard — ADR-0004)',
       );
     }
-    // `exec resume` does not accept `--sandbox` (codex 0.144.6). The read-only
-    // enforcement for the resume path must ride on config, whose exact key is
-    // still to be pinned by a resume-specific spike (batch E/F) — until then
-    // the wiring layer supplies it via `extraArgs`, and multi-turn resume stays
-    // gated on that spike. (The new-turn path below is fully spike-verified.)
+    // `exec resume` does not accept `--sandbox` (codex 0.144.6), so the
+    // read-only wall rides on `COORDINATOR_RESUME_SANDBOX_ARGS` — the
+    // `-c sandbox_mode="read-only"` key the ADR-0008 spike proved OVERRIDES the
+    // creation sandbox back to read-only on resume. Emitted before `extra` so a
+    // caller's extraArgs can never shadow the wall. (Both turn paths are now
+    // spike-verified read-only.)
     return [
       'exec',
       'resume',
       input.resumeSessionId,
       '--json',
       ...COORDINATOR_ISOLATION_ARGS,
+      ...COORDINATOR_RESUME_SANDBOX_ARGS,
       ...extra,
       '--output-schema',
       input.schemaPath,

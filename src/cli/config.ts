@@ -49,11 +49,13 @@ export interface ProjectsConfig {
  * deterministic fallback on failure), which STABLY consumes model quota
  * (ADR-0006 accepted this cost).
  *
- * Deliberately NO `allowResume` knob here: codex 0.144.6's `exec resume` can't
- * assert `--sandbox`, so multi-turn resume's read-only wall is an unpinned
- * spike (RED LINE 6). The production wiring hard-pins resume OFF until that
- * spike lands — exposing it as config would let an operator flip on an
- * unverified-read-only path, so it stays out of the schema on purpose.
+ * Deliberately NO `allowResume` knob here: multi-turn `codex exec resume` is
+ * ADR-0006's core, and the ADR-0008 spike verified the resume path is read-only
+ * (the driver's `-c sandbox_mode="read-only"` overrides even a workspace-write
+ * session on resume), so production simply enables it — there is no
+ * unverified-path toggle for an operator to flip, and the read-only wall is a
+ * driver invariant, not an operator choice. It stays out of the schema on
+ * purpose.
  */
 export interface CoordinatorConfig {
   readonly enabled: boolean;

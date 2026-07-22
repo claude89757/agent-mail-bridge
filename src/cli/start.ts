@@ -243,12 +243,15 @@ export function buildProductionAssemblyBuilders(): AssemblyBuilders {
  * call-capped `spawnCodex` (nothing about the coordinator's construction is
  * test-only). Materializes `COORDINATOR_DECISION_SCHEMA` into the bridge's
  * scratch dir (the `--output-schema` file the read-only turn is shaped by),
- * constructs the read-only codex coordinator driver, and pins `allowResume`
- * OFF — codex 0.144.6's `exec resume` cannot assert `--sandbox`, so multi-turn
- * resume's read-only wall is an unpinned spike (RED LINE 6), and every turn
- * stays a fresh `--sandbox read-only` turn until it lands. The schema file is
- * overwritten each start (idempotent); no cleanup handle, so `close()` is
- * unchanged.
+ * constructs the read-only codex coordinator driver, and enables `allowResume`
+ * — multi-turn coordination is ADR-0006's core (`codex exec resume` continues
+ * the SAME coordinator conversation across mails). This was pinned OFF until the
+ * ADR-0008 spike proved (filesystem ground truth) that the resume path is
+ * read-only: it inherits the read-only creation sandbox AND the driver's
+ * `-c sandbox_mode="read-only"` key OVERRIDES even a workspace-write session
+ * back to read-only on resume — so the RED LINE 6 wall holds on resume, not just
+ * on fresh turns. The schema file is overwritten each start (idempotent); no
+ * cleanup handle, so `close()` is unchanged.
  */
 export function buildCoordinatorRuntime(
   input: BuildCoordinatorInput & { spawnCodex: SpawnCodex },
@@ -261,7 +264,7 @@ export function buildCoordinatorRuntime(
     coordinatorSessionStore: input.coordinatorSessionStore,
     coordinatorCwd: input.scratchDir,
     schemaPath,
-    allowResume: false,
+    allowResume: true,
   };
 }
 

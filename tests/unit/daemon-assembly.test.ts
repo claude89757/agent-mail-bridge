@@ -167,7 +167,9 @@ function makeHarness(options: HarnessOptions = {}): Harness {
         coordinatorSessionStore: input.coordinatorSessionStore,
         coordinatorCwd: input.scratchDir,
         schemaPath: join(input.scratchDir, 'decision.schema.json'),
-        allowResume: false,
+        // Mirrors production `buildCoordinatorRuntime` (resume ON, ADR-0008);
+        // this fake returns sessionId null so no resume actually engages here.
+        allowResume: true,
       };
     },
   };

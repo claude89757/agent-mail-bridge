@@ -59,8 +59,10 @@
  * — the execution driver's (`createCodexDriver`) and the coordinator's
  * (`buildCoordinatorRuntime`) — with ONE shared counter/cap; the coordinator's
  * construction is otherwise byte-for-byte the production `buildCoordinatorRuntime`
- * (nothing test-only, `allowResume` stays OFF — every turn a fresh read-only
- * turn, red line 6).
+ * (nothing test-only). `allowResume` is now ON in production (ADR-0008), but
+ * scenarios A and B are two DISTINCT new threads, so neither resumes — each is a
+ * fresh read-only turn regardless. Multi-turn resume is exercised by the
+ * separate resume E2E (`e2e-coordinator-resume-live.test.ts`).
  *
  * ISOLATION (red line 1): a throwaway git repo under `os.tmpdir()` is the only
  * project the bridge may touch; the SQLite store, the worktrees root, the
