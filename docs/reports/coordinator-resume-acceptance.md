@@ -2,9 +2,10 @@
 
 > Scope: enabling ADR-0006 multi-turn coordination (`codex exec resume`) after
 > proving its read-only wall against real codex — the red-line-6 gap batch E-d
-> had fail-closed OFF. Two parts, both spending real model quota (red line 5,
-> user-approved): a direct-codex read-only SPIKE (5 calls) and a daemon-level
-> multi-turn resume E2E (2 calls). Executed 2026-07-22 for asynchronous review.
+> had fail-closed OFF. Three parts, all spending real model quota (red line 5,
+> each separately user-approved): a direct-codex read-only SPIKE (5 calls), a
+> daemon-level read-only resume E2E (2 calls), and a resume-then-dispatch E2E
+> (3 calls). Executed 2026-07-22 for asynchronous review.
 
 ## The gap this closes
 
@@ -70,6 +71,30 @@ the ONLY place it survives is the resumed codex thread.
 Total codex spend: **2** (both coordinator turns, zero execution). Whole-suite
 wall-clock **91 s**.
 
+## Part 4 — the resume-then-DISPATCH E2E (daemon, real codex)
+
+`tests/live/e2e-coordinator-resume-dispatch-live.test.ts` (own gate
+`AMB_LIVE_COORDINATOR_RESUME_DISPATCH_E2E`) closes the last cell: a RESUMED
+coordinator turn that DECIDES `dispatch` and drives a real `codex exec`, not just
+a read-only answer. Turn 1 is an under-specified request → clarify (creates the
+coordinator session, no agent); turn 2, a thread reply, supplies the task → the
+daemon resumes the coordinator's codex thread → the resumed coordinator dispatches
+→ the shared execution tail runs a real `codex exec` in a bridge-owned worktree.
+
+| Signal | Turn 1 (clarify) | Turn 2 (resume→dispatch) | What it proves |
+| --- | --- | --- | --- |
+| Coordinator turn | 1 new | 1 **resume** | turn 2 resumed the coordinator thread |
+| `dispatched` | 0 | **1** | the resumed coordinator dispatched and it executed |
+| Execution starts (codex) | 0 | **1** | a real `codex exec` ran (workspace-write) |
+| `coordinator_sessions.updated_at` | (set) | **advanced** | the resume turn SUCCEEDED + re-upserted — it DECIDED, not fell back to the deterministic router |
+| Reply is a clarify? | (n/a) | **no** | the resumed coordinator committed to dispatch |
+| Round-trip | ~43 s | ~139 s | inside the 10-min exit metric (incl. the execution turn) |
+| Leak checks | — | all false | C9 scrub held over the dispatch result too |
+
+Total codex spend: **3** (1 coord-new + 1 coord-resume + 1 exec). The
+`coordinatorReUpserted` signal is the one that rules out a deterministic-fallback
+dispatch masquerading as a coordinator decision.
+
 ## What this closes
 
 - **Red-line-6 gap: CLOSED, positive.** The resume read-only wall is verified
@@ -77,6 +102,9 @@ wall-clock **91 s**.
 - **Multi-turn coordination (ADR-0006): live.** A thread reply resumes the SAME
   codex conversation with real cross-turn memory — the nonce recall is decisive,
   not circumstantial.
+- **Resume-then-dispatch: live.** A resumed coordinator turn can DECIDE `dispatch`
+  and drive a real `codex exec` (Part 4) — the resume path is proven for both
+  read-only and executing outcomes, completing the coverage matrix.
 - **Clarify path: live.** An under-specified request produced a `❓ clarification`
   reply (coordinator-only capability).
 - **Three-layer mapping: live.** `coordinator_sessions` bound the thread to one
@@ -91,9 +119,10 @@ wall-clock **91 s**.
   low-entropy non-secret test token.
 - **Red line 3** — authenticated self-send only; control mails omit the bridge
   echo markers so ingest treats them as genuine commands.
-- **Red line 5** — the spend was pre-estimated (~5 calls, cap 8) and
-  user-approved before any run; actual: **7** (5 spike + 2 E2E), each phase
-  hard-capped in process.
+- **Red line 5** — each phase was pre-estimated and user-approved before any
+  run (spike+read-only E2E ~5 calls cap 8; resume-dispatch E2E 3 calls cap 4);
+  actual total **10** (5 spike + 2 read-only E2E + 3 resume-dispatch E2E), each
+  phase hard-capped in process.
 - **Red line 6** — the whole point: the fail-closed OFF posture was flipped ONLY
   after filesystem-verified proof the wall holds; `--dangerously-bypass-*` /
   `workspace-write` never appeared on any coordinator argv.
@@ -105,9 +134,10 @@ wall-clock **91 s**.
   `sandbox_mode` key overriding on resume) are pinned to codex 0.144.6 — ADR-0008
   lists the regression triggers (CLI major/minor bump; sandbox/config surface
   change) at which to re-run the spike.
-- **`dispatch`-on-resume not exercised live.** Turn 2 was a read-only recall; a
-  resumed turn that then DISPATCHES (executes) is unit-covered but not driven
-  live here (it would spend an execution turn).
+- **`resume`-then-`clarify` not exercised live.** The resume path is now proven
+  live for read-only (answer/recall, Part 3) AND dispatch-then-execute (Part 4);
+  a resumed turn that clarifies AGAIN is unit-covered but not driven live (low
+  marginal value for the quota).
 
 ## Reproduction
 
