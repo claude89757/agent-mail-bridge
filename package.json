@@ -1,6 +1,6 @@
 {
   "name": "agent-mail-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Email is the universal, firewall-friendly async transport for AI agents. Control your own coding agent on your own device from your own mailbox.",
   "type": "module",
   "license": "MIT",

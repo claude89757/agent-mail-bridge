@@ -14,28 +14,35 @@ your mail provider is the only intermediary.
 
 ## Status
 
-**v0.1.0 is released — [on npm](https://www.npmjs.com/package/agent-mail-bridge).**
-What exists today, stated honestly:
+**v0.2.0 — [on npm](https://www.npmjs.com/package/agent-mail-bridge).** What
+exists today, stated honestly:
 
-- **Built and tested** — the full core pipeline (IMAP ingest → deterministic
-  routing → codex dispatch in a bridge-owned worktree → redacted reply →
-  daemon poll loop), including the self-mail identity gate (ADR-0003
-  polarity inversion) and crash recovery, idempotent ingest and a
-  transactional outbox; 850+ tests, every external seam (IMAP, SMTP, codex,
-  git, filesystem, clock) faked in tests.
-- **Live-verified** — the IMAP read path (read-only, against a dedicated
-  test mailbox), the SMTP send round-trip (a production-path self-send whose
-  `Message-ID` and echo markers were read back over IMAP), and the full
-  pipeline end to end: a real self-mail drove a real codex task in a
-  bridge-owned worktree and the scrubbed result mailed itself back — twice
-  (a fresh command, then a thread reply that resumed the same codex session),
-  in ~48 s and ~52 s round-trip, with the delivered replies verified to carry
-  no credential, worktree path, or home-directory string.
-- **Not yet** — the interactive clarification mail flow (replying
-  `1`/`2`/`new` to an ambiguous command) waits on a real-device walkthrough.
-  "From README to the first result mail in ≤ 10 minutes" is the v0.1.0
-  acceptance target; the end-to-end command round-trip above already lands
-  well inside it — the rest is a human doing first-time setup.
+- **Built and tested** — the full core pipeline (IMAP ingest → routing → codex
+  dispatch in a bridge-owned worktree → redacted reply → daemon poll loop),
+  including the self-mail identity gate (ADR-0003 polarity inversion) and crash
+  recovery, idempotent ingest and a transactional outbox; 970+ tests, every
+  external seam (IMAP, SMTP, codex, git, filesystem, clock) faked in tests.
+- **Conversational mode (opt-in, new in 0.2.0)** — with `coordinator.enabled`
+  set, a mail is read in plain language: the bridge dispatches natural-language
+  tasks, asks a clarifying question when a request is under-specified, answers
+  read-only meta-queries (projects, sessions, status), and carries a thread as
+  one multi-turn conversation. Off by default — the deterministic router above
+  is unchanged and spends zero model quota. See
+  [Conversational mode](#conversational-mode-opt-in).
+- **Live-verified** — the IMAP read path (read-only, against a dedicated test
+  mailbox), the SMTP send round-trip (a production-path self-send read back over
+  IMAP), and the full pipeline end to end: a real self-mail drove a real codex
+  task in a bridge-owned worktree and the scrubbed result mailed itself back,
+  the delivered replies verified to carry no credential, worktree path, or
+  home-directory string. Conversational mode is live-verified too — answer,
+  dispatch, multi-turn clarification, and cross-mail `codex exec resume` each
+  driven against real codex, every reply leak-checked (ADR-0008).
+- **Not yet** — an inline reply-with-a-number picker for the *deterministic*
+  router's ambiguous matches (conversational mode handles clarification in prose
+  instead); a real-device first-run walkthrough. "From README to the first
+  result mail in ≤ 10 minutes" remains the acceptance target; the end-to-end
+  command round-trip above already lands well inside it — the rest is a human
+  doing first-time setup.
 
 Roadmap and design decisions:
 [docs/superpowers/specs/2026-07-17-agent-mail-bridge-roadmap-design.md](docs/superpowers/specs/2026-07-17-agent-mail-bridge-roadmap-design.md)
@@ -240,6 +247,7 @@ validation but resolve against the daemon's working directory at runtime.
 | `mailbox` | `"INBOX"` | IMAP mailbox to watch. |
 | `timeWindow` | — (optional) | `{ timezone, days, start, end, excludeDates }`. Mail arriving outside the window is held as `QUEUED_WINDOW` instead of dispatched; omitted means always within the window. |
 | `dryRun` | `false` | Record dispatch intents but never invoke the agent (same effect as `amb start --dry-run`, made permanent). |
+| `coordinator` | — (optional; off) | `{ "enabled": true }` turns on [conversational mode](#conversational-mode-opt-in) (ADR-0006): each thread-bound command first gets one read-only codex coordinator turn, falling back to the deterministic router on failure. Absent or `false` ⇒ the deterministic router, zero model quota. |
 
 Daemon logs are written to `$XDG_STATE_HOME/agent-mail-bridge/logs/amb.log`
 (fallback `~/.local/state/…`, size-rotated), through the same redaction
@@ -255,8 +263,8 @@ time window — before persisting it (idempotently, keyed on normalized
 continuity first (a reply in a known thread resumes that thread's codex
 session), then a unique exact match against the configured project index;
 anything ambiguous is answered with a reply naming the candidates instead
-of a guess (the interactive clarification flow — replying `1`/`2`/`new` —
-awaits the real-device walkthrough). Dispatch runs `codex exec --json` inside a bridge-owned git worktree
+of a guess (or, with [conversational mode](#conversational-mode-opt-in)
+enabled, a clarifying question you answer in the same thread). Dispatch runs `codex exec --json` inside a bridge-owned git worktree
 with the `workspace-write` sandbox ceiling, and the outcome is composed into
 a reply that passes a redaction funnel (path placeholders, secret-pattern
 masking) before the SMTP sender — recipient locked to your own address —
@@ -270,6 +278,41 @@ recovery marks work interrupted by a crash instead of silently re-running it.
 See [docs/architecture.md](docs/architecture.md) for the pipeline diagram,
 module boundaries, the reliability model, and the per-stage implementation
 status with evidence links.
+
+## Conversational mode (opt-in)
+
+By default the bridge routes deterministically — the subject picks the project,
+the body is the task — and spends zero model quota on routing. Set
+`coordinator.enabled` and a mail is instead read by a **read-only** codex
+coordinator (ADR-0006), which adds:
+
+- **Natural-language dispatch** — describe the task in prose; the rigid
+  subject-names-the-project convention is no longer required.
+- **Multi-turn clarification** — an under-specified request comes back as a
+  `❓ clarification` reply; answer it in the same thread and the coordinator
+  resumes the *same* codex conversation (`codex exec resume`), context intact.
+- **Read-only meta-queries** — ask about your projects, sessions, or status and
+  get a `💬 answer` reply; nothing runs.
+
+Enable it in `config.json`:
+
+```json
+"coordinator": { "enabled": true }
+```
+
+**The trade-off:** every thread-bound command now spends model quota on one
+coordinator turn (ADR-0006 accepted this cost). On any coordinator failure the
+daemon falls back to the deterministic router — fail-closed, never a guess.
+
+**The security posture is unchanged.** The identity gate and execution isolation
+are untouched; the coordinator only ever *reads*. Three walls contain a forged or
+injection-laden mail: a `read-only` sandbox (verified to hold on resume too,
+ADR-0008), path→alias scrubbing over both the context the model sees and the
+reply it writes, and a dispatch target always remapped back to your project
+allowlist — an unmatched or path-shaped name fails closed to a clarification. See
+[ADR-0006](docs/adr/0006-conversational-coordination-layer.md),
+[ADR-0007](docs/adr/0007-coordinator-context-prompt-injection-not-mcp.md), and
+[ADR-0008](docs/adr/0008-coordinator-resume-read-only-verified.md).
 
 ## Documentation
 
