@@ -55,6 +55,17 @@ jobs:
       - name: Upgrade npm for OIDC trusted publishing
         run: npm install -g npm@latest
 
+      # Makes a failed publish self-diagnosing. OIDC trusted publishing requires
+      # npm >= 11.5.1 AND node >= 22.14.0; npm prioritizes OIDC over tokens when
+      # both hold. So if these print compliant versions and publish still returns
+      # E404, OIDC was ATTEMPTED and REJECTED — i.e. the trusted-publisher record
+      # on npmjs.com does not match this repo/workflow — rather than the CLI
+      # being too old to try. Added after the v0.2.0 attempt failed ambiguously.
+      - name: Report toolchain versions (OIDC preconditions)
+        run: |
+          node --version
+          npm --version
+
       - name: Publish to npm (OIDC trusted publishing)
         run: npm publish --access public
 
