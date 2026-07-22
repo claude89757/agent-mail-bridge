@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Conversational coordination layer (ADR-0006), off by default. A mail can now be
+written in plain language: the bridge understands it, asks a clarifying question
+when the request is under-specified, answers read-only meta-queries (projects,
+sessions, status, history) without running anything, and carries a multi-turn
+thread as one conversation — all behind the unchanged deterministic identity
+gate. The operator opts in per install; with it off, routing stays exactly as in
+0.1.0. The security kernel (identity gate + execution isolation) is untouched —
+the coordinator only ever reads.
+
+### Added
+
+- Coordinator behind the identity gate: a codex session driven at
+  `--sandbox read-only` interprets the mail and emits a structured
+  `dispatch` | `clarify` | `answer` decision. On model failure or off-schema
+  output it falls back to the 0.1.0 deterministic router (fail-closed — never a
+  guess).
+- Multi-turn coordination: a reply on the same thread resumes the SAME codex
+  conversation (`codex exec resume`), so context carries across mails; verified
+  live against real codex (ADR-0008).
+- Read-only meta-queries: projects / sessions / status / history answered from a
+  scrubbed snapshot pushed into the prompt (ADR-0007) — no agent runs, the
+  intent is `RESOLVED` without dispatching.
+- Coordinator reply markers `💬 answer` and `❓ clarification`, distinct from a
+  dispatch result.
+
+### Changed
+
+- Releases now publish via npm trusted publishing (OIDC): no long-lived npm
+  token is stored anywhere; a pushed `v*` tag drives publish + GitHub Release
+  from CI (ADR-0005).
+
+### Security
+
+- The coordinator can never write: `--sandbox read-only` on every new turn and,
+  on resume (which cannot re-assert `--sandbox`), an independently-enforcing
+  `-c sandbox_mode="read-only"` emitted as a driver invariant — verified against
+  real codex by a filesystem-ground-truth spike (ADR-0008).
+- Injection containment: a forged or injection-laden mail body cannot make the
+  coordinator dispatch outside the operator's allowlist. The model only ever
+  emits an alias; the real path comes solely from the trusted project index, and
+  an unmatched or path-shaped alias fails closed to a clarification. Covered by
+  orchestrator- and daemon-level tests.
+- Redaction holds over untrusted model text: real paths become aliases in the
+  pushed context, and the coordinator's own reply is scrubbed before send, so a
+  model reply cannot leak a local path.
+
 ## [0.1.0] - 2026-07-20
 
 First public release. The full pipeline — IMAP ingest → deterministic
@@ -67,4 +115,5 @@ ambiguous command); see the README's Status section.
   `amb install` / `uninstall` only print the service-manager activation
   commands — they never execute them.
 
+[Unreleased]: https://github.com/claude89757/agent-mail-bridge/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/claude89757/agent-mail-bridge/releases/tag/v0.1.0
